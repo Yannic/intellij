@@ -153,6 +153,10 @@ intellij_integration_test_suite(
         "android-studio-3.6": glob(["testcompat/as36/integration/**/*.java"]),
         "android-studio-4.0": glob(["testcompat/as40/integration/**/*.java"]),
     }),
+    data = [
+        "tests/integrationtests/com/google/idea/blaze/android/run/runner/debug.apk",
+        "tests/integrationtests/com/google/idea/blaze/android/run/runner/nondebug.apk",
+    ],
     required_plugins = "com.google.idea.bazel.aswb",
     test_package_root = "com.google.idea.blaze.android",
     runtime_deps = [
@@ -174,6 +178,7 @@ intellij_integration_test_suite(
         "//intellij_platform_sdk:plugin_api_for_tests",
         "//intellij_platform_sdk:test_libs",
         "//java",
+        "//java/com/google/testing/util",
         "//proto:proto_deps",
         "//sdkcompat",
         "@junit//jar",
