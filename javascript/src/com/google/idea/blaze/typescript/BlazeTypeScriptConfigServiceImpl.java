@@ -190,17 +190,17 @@ class BlazeTypeScriptConfigServiceImpl implements TypeScriptConfigService {
     return configs.values().asList();
   }
 
-  @Override
+  // #api223 remove this method
   public List<VirtualFile> getConfigFiles() {
     return this.configs.keySet().asList();
   }
 
-  @Override
+  // #api223 remove this method
   public void addChangeListener(TypeScriptConfigsChangedListener listener) {
     listeners.add(listener);
   }
 
-  @Override
+  // #api223 remove this method
   public ModificationTracker getConfigTracker(@Nullable VirtualFile file) {
     return BlazeSyncModificationTracker.getInstance(project);
   }
@@ -221,9 +221,9 @@ class BlazeTypeScriptConfigServiceImpl implements TypeScriptConfigService {
     return ImmutableSet.of();
   }
 
-  private static ImmutableList<? extends VirtualFile> getNearestParentTsConfigs(
+  private ImmutableList<? extends VirtualFile> getNearestParentTsConfigs(
       @Nullable VirtualFile scopeFile, ImmutableMap<VirtualFile, TypeScriptConfig> configs) {
-    return TypeScriptConfigServiceImpl.getNearestParentTsConfigs(scopeFile, false).stream()
+    return TypeScriptConfigServiceImpl.getNearestParentTsConfigs(project, scopeFile, false).stream()
         .filter(configs::containsKey)
         .collect(toImmutableList());
   }

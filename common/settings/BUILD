@@ -1,3 +1,4 @@
+load("@rules_java//java:defs.bzl", "java_library")
 load(
     "//:build-visibility.bzl",
     "COMMON_PLUGINS_VISIBILITY",
@@ -12,6 +13,7 @@ java_library(
     deps = [
         "//intellij_platform_sdk:jsr305",
         "//intellij_platform_sdk:plugin_api",
-        "//third_party/auto_value",
+        "//third_party/java/auto_value",
+        "@error_prone_annotations//jar",
     ],
 )

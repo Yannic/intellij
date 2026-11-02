@@ -15,70 +15,159 @@
  */
 package com.google.idea.blaze.cpp;
 
+import com.google.auto.value.AutoValue;
+import com.google.auto.value.extension.toprettystring.ToPrettyString;
 import com.google.common.collect.ImmutableList;
-import com.intellij.openapi.project.Project;
+import com.google.common.collect.ImmutableMap;
+import com.google.idea.blaze.base.model.primitives.ExecutionRootPath;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.jetbrains.cidr.lang.CLanguageKind;
 import com.jetbrains.cidr.lang.OCLanguageKind;
+import com.jetbrains.cidr.lang.workspace.compiler.AppleClangCompilerKind;
+import com.jetbrains.cidr.lang.workspace.compiler.AppleClangSwitchBuilder;
+import com.jetbrains.cidr.lang.workspace.compiler.ClangClCompilerKind;
+import com.jetbrains.cidr.lang.workspace.compiler.ClangClSwitchBuilder;
+import com.jetbrains.cidr.lang.workspace.compiler.ClangCompilerKind;
+import com.jetbrains.cidr.lang.workspace.compiler.ClangSwitchBuilder;
+import com.jetbrains.cidr.lang.workspace.compiler.CompilerSpecificSwitchBuilder;
+import com.jetbrains.cidr.lang.workspace.compiler.GCCCompilerKind;
+import com.jetbrains.cidr.lang.workspace.compiler.GCCSwitchBuilder;
+import com.jetbrains.cidr.lang.workspace.compiler.MSVCCompilerKind;
+import com.jetbrains.cidr.lang.workspace.compiler.MSVCSwitchBuilder;
 import com.jetbrains.cidr.lang.workspace.compiler.OCCompilerKind;
 import java.io.File;
-import java.util.List;
+import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
-final class BlazeCompilerSettings {
+@AutoValue
+public abstract class BlazeCompilerSettings {
 
-  @Nullable private final File cCompiler;
-  @Nullable private final File cppCompiler;
-  private final ImmutableList<String> cCompilerSwitches;
-  private final ImmutableList<String> cppCompilerSwitches;
-  private final String compilerVersion;
+  public abstract @Nullable File cCompiler();
 
-  BlazeCompilerSettings(
-      Project project,
-      @Nullable File cCompiler,
-      @Nullable File cppCompiler,
-      ImmutableList<String> cFlags,
-      ImmutableList<String> cppFlags,
-      String compilerVersion) {
-    this.cCompiler = cCompiler;
-    this.cppCompiler = cppCompiler;
-    this.cCompilerSwitches = ImmutableList.copyOf(getCompilerSwitches(project, cFlags));
-    this.cppCompilerSwitches = ImmutableList.copyOf(getCompilerSwitches(project, cppFlags));
-    this.compilerVersion = compilerVersion;
-  }
+  public abstract @Nullable File cppCompiler();
 
-  OCCompilerKind getCompiler(OCLanguageKind languageKind) {
-    if (languageKind == CLanguageKind.C || languageKind == CLanguageKind.CPP) {
-      return OCCompilerKind.CLANG;
+  public abstract ImmutableList<String> cSwitches();
+
+  public abstract ImmutableList<String> cppSwitches();
+
+  public abstract String version();
+
+  public abstract String name();
+
+  public abstract ImmutableMap<String, String> environment();
+
+  public abstract ImmutableList<ExecutionRootPath> builtInIncludes();
+
+  public abstract @Nullable ExecutionRootPath sysroot();
+
+  @ToPrettyString
+  public abstract String toPrettyString();
+
+  private <T> T when(
+      Supplier<T> msvc,
+      Supplier<T> appleClang,
+      Supplier<T> clang,
+      Supplier<T> clangCl,
+      Supplier<T> gcc) {
+    if (CompilerVersionUtil.isMSVC(version())) {
+      return msvc.get();
     }
-    return OCCompilerKind.UNKNOWN;
+
+    if (CompilerVersionUtil.isClang(version())) {
+      if (name().endsWith("-cl")) {
+        return clangCl.get();
+      }
+      if (CompilerVersionUtil.isAppleClang(version())) {
+        return appleClang.get();
+      }
+      return clang.get();
+    }
+
+    // default to gcc
+    return gcc.get();
   }
 
-  File getCompilerExecutable(OCLanguageKind lang) {
+  /**
+   * The real compiler kind. This is what the commited workspace gets to see.
+   */
+  public OCCompilerKind getCompilerKind() {
+    return when(
+        /* msvc */ () -> MSVCCompilerKind.INSTANCE,
+        /* appleClang */ () -> AppleClangCompilerKind.INSTANCE,
+        /* clang */ () -> ClangCompilerKind.INSTANCE,
+        /* clangCl */ () -> ClangClCompilerKind.INSTANCE,
+        /* gcc */ () -> GCCCompilerKind.INSTANCE
+    );
+  }
+
+  /**
+   * The compiler kind used only for compiler info collection.
+   */
+  public OCCompilerKind getCompilerProbeKind() {
+    return when(
+        /* msvc */ () -> MSVCCompilerKind.INSTANCE,
+        /* appleClang */ () -> BazelAppleClangCompilerKind.INSTANCE,
+        /* clang */ () -> BazelClangCompilerKind.INSTANCE,
+        /* clangCl */ () -> ClangClCompilerKind.INSTANCE,
+        /* gcc */ () -> BazelGCCCompilerKind.INSTANCE
+    );
+  }
+
+  public CompilerSpecificSwitchBuilder createSwitchBuilder() {
+    return when(
+        /* msvc */ MSVCSwitchBuilder::new,
+        /* appleClang */ AppleClangSwitchBuilder::new,
+        /* clang */ ClangSwitchBuilder::new,
+        /* clangCl */ ClangClSwitchBuilder::new,
+        /* gcc */ GCCSwitchBuilder::new
+    );
+  }
+
+  public @Nullable File getCompilerExecutable(OCLanguageKind lang) {
     if (lang == CLanguageKind.C) {
-      return cCompiler;
+      return cCompiler();
     } else if (lang == CLanguageKind.CPP) {
-      return cppCompiler;
+      return cppCompiler();
     }
     // We don't support objective c/c++.
     return null;
   }
 
-  ImmutableList<String> getCompilerSwitches(OCLanguageKind lang, @Nullable VirtualFile sourceFile) {
+  public ImmutableList<String> getCompilerSwitches(OCLanguageKind lang) {
     if (lang == CLanguageKind.C) {
-      return cCompilerSwitches;
+      return cSwitches();
     }
     if (lang == CLanguageKind.CPP) {
-      return cppCompilerSwitches;
+      return cppSwitches();
     }
     return ImmutableList.of();
   }
 
-  private static List<String> getCompilerSwitches(Project project, List<String> allCompilerFlags) {
-    return BlazeCompilerFlagsProcessor.process(project, allCompilerFlags);
+  public static Builder builder() {
+    return new AutoValue_BlazeCompilerSettings.Builder();
   }
 
-  String getCompilerVersion() {
-    return compilerVersion;
+  @AutoValue.Builder
+  public abstract static class Builder {
+
+    public abstract Builder setCCompiler(@Nullable File value);
+
+    public abstract Builder setCppCompiler(@Nullable File value);
+
+    public abstract Builder setCSwitches(ImmutableList<String> value);
+
+    public abstract Builder setCppSwitches(ImmutableList<String> value);
+
+    public abstract Builder setVersion(String value);
+
+    public abstract Builder setName(String value);
+
+    public abstract Builder setEnvironment(ImmutableMap<String, String> value);
+
+    public abstract Builder setBuiltInIncludes(ImmutableList<ExecutionRootPath> value);
+
+    public abstract Builder setSysroot(@Nullable ExecutionRootPath value);
+
+    public abstract BlazeCompilerSettings build();
   }
 }

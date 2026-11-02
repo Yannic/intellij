@@ -20,8 +20,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.idea.blaze.base.command.buildresult.BlazeArtifact;
-import com.google.idea.blaze.base.command.buildresult.BuildResultHelper.GetArtifactsException;
+import com.google.idea.blaze.base.command.buildresult.GetArtifactsException;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.primitives.Kind;
 import com.google.idea.blaze.base.model.primitives.Label;
@@ -38,6 +37,7 @@ import com.google.idea.blaze.base.run.testlogs.BlazeTestResults;
 import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BuildSystemName;
 import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
+import com.google.idea.blaze.common.artifact.BlazeArtifact;
 import com.google.idea.common.experiments.BoolExperiment;
 import com.intellij.execution.process.ProcessOutputTypes;
 import com.intellij.execution.testframework.TestConsoleProperties;
@@ -463,7 +463,7 @@ public class BlazeXmlToTestEventsConverter extends OutputToGeneralTestEventsConv
         BlazeProjectData projectData =
             BlazeProjectDataManager.getInstance(project).getBlazeProjectData();
         if (projectData != null) {
-          return projectData.getBlazeVersionData().bazelIsAtLeastVersion(major, minor, bugfix);
+          return projectData.blazeVersionData().bazelIsAtLeastVersion(major, minor, bugfix);
         }
       }
     }

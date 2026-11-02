@@ -24,7 +24,7 @@ import com.google.idea.blaze.base.filecache.FileCaches;
 import com.google.idea.blaze.base.filecache.RemoteOutputsCache;
 import com.google.idea.blaze.base.ideinfo.TargetMap;
 import com.google.idea.blaze.base.io.VirtualFileSystemProvider;
-import com.google.idea.blaze.base.model.AspectSyncProjectData;
+import com.google.idea.blaze.base.model.BlazeConfigurationData;
 import com.google.idea.blaze.base.model.BlazeLibrary;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.BlazeVersionData;
@@ -42,7 +42,9 @@ import com.google.idea.blaze.base.scope.output.StatusOutput;
 import com.google.idea.blaze.base.scope.scopes.NetworkTrafficTrackingScope.NetworkTrafficUsedOutput;
 import com.google.idea.blaze.base.scope.scopes.TimingScope;
 import com.google.idea.blaze.base.scope.scopes.TimingScope.EventType;
+import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
 import com.google.idea.blaze.base.sync.BlazeSyncPlugin.ModuleEditor;
 import com.google.idea.blaze.base.sync.SyncScope.SyncCanceledException;
@@ -71,11 +73,12 @@ import com.intellij.openapi.roots.ContentEntry;
 import com.intellij.openapi.roots.ModifiableRootModel;
 import com.intellij.openapi.roots.ex.ProjectRootManagerEx;
 import com.intellij.openapi.util.io.FileUtil;
+import com.intellij.openapi.util.registry.Registry;
+import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VfsUtil;
-import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileManager;
+import com.intellij.openapi.vfs.newvfs.NewVirtualFile;
 import java.io.File;
-import java.util.Arrays;
 import java.util.List;
 import javax.annotation.Nullable;
 
@@ -117,11 +120,12 @@ final class ProjectUpdateSyncTask {
       SyncProjectState projectState,
       ProjectTargetData targetData,
       BlazeInfo blazeInfo,
+      BlazeConfigurationData configurationData,
       BlazeContext context)
       throws SyncCanceledException, SyncFailedException {
     SaveUtil.saveAllFiles();
     ProjectUpdateSyncTask task =
-        new ProjectUpdateSyncTask(project, syncMode, projectState, targetData, blazeInfo);
+        new ProjectUpdateSyncTask(project, syncMode, projectState, targetData, blazeInfo, configurationData);
     task.run(context);
   }
 
@@ -132,6 +136,7 @@ final class ProjectUpdateSyncTask {
   private final SyncProjectState projectState;
   private final ProjectTargetData targetData;
   private final BlazeInfo blazeInfo;
+  private final BlazeConfigurationData configurationData;
   @Nullable private final BlazeProjectData oldProjectData;
 
   private ProjectUpdateSyncTask(
@@ -139,7 +144,8 @@ final class ProjectUpdateSyncTask {
       SyncMode syncMode,
       SyncProjectState projectState,
       ProjectTargetData targetData,
-      BlazeInfo blazeInfo) {
+      BlazeInfo blazeInfo,
+      BlazeConfigurationData configurationData) {
     this.project = project;
     this.importSettings = BlazeImportSettingsManager.getInstance(project).getImportSettings();
     this.workspaceRoot = WorkspaceRoot.fromImportSettings(importSettings);
@@ -147,14 +153,20 @@ final class ProjectUpdateSyncTask {
     this.projectState = projectState;
     this.targetData = targetData;
     this.blazeInfo = Preconditions.checkNotNull(blazeInfo, "Null BlazeInfo");
+    this.configurationData = Preconditions.checkNotNull(configurationData, "Null BlazeConfigurationData");
     this.oldProjectData = getOldProjectData(project, syncMode);
   }
 
   @Nullable
   private static BlazeProjectData getOldProjectData(Project project, SyncMode syncMode) {
-    return syncMode == SyncMode.FULL
-        ? null
-        : BlazeProjectDataManager.getInstance(project).getBlazeProjectData();
+    if (syncMode == SyncMode.FULL) {
+      return null;
+    }
+    Preconditions.checkState(
+        Blaze.getProjectType(project) == ProjectType.ASPECT_SYNC,
+        "This should only happen in legacy sync");
+
+    return BlazeProjectDataManager.getInstance(project).getBlazeProjectData();
   }
 
   private void run(BlazeContext context) throws SyncCanceledException, SyncFailedException {
@@ -197,7 +209,7 @@ final class ProjectUpdateSyncTask {
                 artifactLocationDecoder,
                 targetMap,
                 syncStateBuilder,
-                oldProjectData != null ? oldProjectData.getSyncState() : null,
+                oldProjectData != null ? oldProjectData.syncState() : null,
                 syncMode);
           }
         });
@@ -209,14 +221,17 @@ final class ProjectUpdateSyncTask {
     }
 
     BlazeProjectData newProjectData =
-        new AspectSyncProjectData(
-            targetData,
-            blazeInfo,
-            projectState.getBlazeVersionData(),
-            projectState.getWorkspacePathResolver(),
-            artifactLocationDecoder,
-            projectState.getLanguageSettings(),
-            syncStateBuilder.build());
+        BlazeProjectData.builder()
+            .targetData(targetData)
+            .blazeInfo(blazeInfo)
+            .blazeVersionData(projectState.getBlazeVersionData())
+            .workspacePathResolver(projectState.getWorkspacePathResolver())
+            .artifactLocationDecoder(artifactLocationDecoder)
+            .workspaceLanguageSettings(projectState.getLanguageSettings())
+            .externalWorkspaceData(projectState.getExternalWorkspaceData())
+            .syncState(syncStateBuilder.build())
+            .configurationData(configurationData)
+            .build();
 
     FileCaches.onSync(
         project,
@@ -272,25 +287,46 @@ final class ProjectUpdateSyncTask {
   }
 
   private static void refreshVirtualFileSystem(
-      BlazeContext context, Project project, BlazeProjectData blazeProjectData) {
-    Scope.push(
-        context,
-        (childContext) -> {
-          childContext.push(new TimingScope("RefreshVirtualFileSystem", EventType.Other));
-          childContext.output(new StatusOutput("Refreshing files..."));
-          if (ApplicationManager.getApplication().isReadAccessAllowed()) {
-            IssueOutput.warn("Attempted to refresh file system while holding read lock")
-                .submit(childContext);
-            logger.warn("Attempted to refresh file system while holding read lock");
-          } else if (Arrays.stream(BlazeSyncPlugin.EP_NAME.getExtensions())
-              .anyMatch(p -> p.refreshExecutionRoot(project, blazeProjectData))) {
-            // this refresh should happen off EDT and without read lock.
-            VirtualFile root =
-                VfsUtil.findFileByIoFile(blazeProjectData.getBlazeInfo().getExecutionRoot(), true);
-            VfsUtil.markDirtyAndRefresh(
-                /* async= */ false, /* recursive= */ true, /* reloadChildren= */ true, root);
-          }
-        });
+      BlazeContext parentContext,
+      Project project,
+      BlazeProjectData blazeProjectData
+  ) {
+    Scope.push(parentContext, (ctx) -> {
+      ctx.push(new TimingScope("RefreshVirtualFileSystem", EventType.Other));
+      ctx.output(new StatusOutput("Refreshing files..."));
+
+      final var shouldRefreshRoot = BlazeSyncPlugin.EP_NAME.getExtensionList()
+          .stream()
+          .anyMatch(it -> it.refreshExecutionRoot(project, blazeProjectData));
+
+      if (!shouldRefreshRoot) {
+        return;
+      }
+
+      // holding a read lock while calling refresh will cause a deadlock
+      if (ApplicationManager.getApplication().isReadAccessAllowed()) {
+        IssueOutput.warn("Attempted to refresh file system while holding read lock").submit(ctx);
+        return;
+      }
+
+      if (Registry.is("bazel.sync.mark.dirty")) {
+        final var file = VfsUtil.findFileByIoFile(
+            /* file = */ blazeProjectData.blazeInfo().getExecutionRoot(),
+            /* refreshIfNeeded = */ false
+        );
+
+        if (file instanceof NewVirtualFile virtualFile) {
+          virtualFile.markDirtyRecursively();
+        }
+      }
+
+      LocalFileSystem.getInstance().refreshIoFiles(
+          /* files = */ List.of(blazeProjectData.blazeInfo().getExecutionRoot()),
+          /* async = */ false,
+          /* recursive = */ true,
+          /* onFinish = */ null
+      );
+    });
   }
 
   private void createSdks(BlazeProjectData blazeProjectData) {
@@ -365,7 +401,7 @@ final class ProjectUpdateSyncTask {
     for (BlazeSyncPlugin syncPlugin : BlazeSyncPlugin.EP_NAME.getExtensions()) {
       workspaceModuleType =
           syncPlugin.getWorkspaceModuleType(
-              newBlazeProjectData.getWorkspaceLanguageSettings().getWorkspaceType());
+              newBlazeProjectData.workspaceLanguageSettings().getWorkspaceType());
       if (workspaceModuleType != null) {
         break;
       }

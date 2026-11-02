@@ -96,10 +96,28 @@ public class BlazeUserSettingsConfigurable extends AutoConfigurable {
               .setter(BlazeUserSettings::setShowProblemsViewOnRun)
               .componentFactory(LabeledComponent.comboBoxFactory(FocusBehavior.class));
 
+  private static final ConfigurableSetting<?, ?>  ALLOW_JAVASCRIPT_TESTS =
+          setting("Enable Javascript test configuration producers (Requires application restart to take effect)")
+                  .getter(BlazeUserSettings::isJavascriptTestrunnersEnabled)
+                  .setter(BlazeUserSettings::setJavascriptTestrunnersEnabled)
+                  .componentFactory(SimpleComponent::createCheckBox);
+
   private static final ConfigurableSetting<?, ?> COLLAPSE_PROJECT_VIEW =
       setting("Collapse project view directory roots")
           .getter(BlazeUserSettings::getCollapseProjectView)
           .setter(BlazeUserSettings::setCollapseProjectView)
+          .componentFactory(SimpleComponent::createCheckBox);
+
+  private static final ConfigurableSetting<?, ?> USE_NEW_SYNC_VIEW =
+      setting("Use the new sync view")
+          .getter(BlazeUserSettings::getUseNewSyncView)
+          .setter(BlazeUserSettings::setUseNewSyncView)
+          .componentFactory(SimpleComponent::createCheckBox);
+
+  private static final ConfigurableSetting<?, ?> FORWARD_PROXY_SETTINGS =
+      setting("Forward proxy settings")
+          .getter(BlazeUserSettings::getForwardProxySettings)
+          .setter(BlazeUserSettings::setForwardProxySettings)
           .componentFactory(SimpleComponent::createCheckBox);
 
   private static final ConfigurableSetting<?, ?> ALWAYS_SELECT_NEWEST_CHILD_TASK =
@@ -129,7 +147,7 @@ public class BlazeUserSettingsConfigurable extends AutoConfigurable {
           .componentFactory(fileSelector(BLAZE_BINARY_PATH_KEY, "Specify the blaze binary path"));
 
   public static final String BAZEL_BINARY_PATH_KEY = "bazel.binary.path";
-  private static final ConfigurableSetting<?, ?> BAZEL_BINARY_PATH =
+  public static final ConfigurableSetting<?, ?> BAZEL_BINARY_PATH =
       setting("Bazel binary location")
           .getter(BlazeUserSettings::getBazelBinaryPath)
           .setter(BlazeUserSettings::setBazelBinaryPath)
@@ -150,7 +168,10 @@ public class BlazeUserSettingsConfigurable extends AutoConfigurable {
           SHOW_CONSOLE_ON_RUN,
           SHOW_PROBLEMS_VIEW_ON_SYNC,
           SHOW_PROBLEMS_VIEW_ON_RUN,
+          ALLOW_JAVASCRIPT_TESTS,
           COLLAPSE_PROJECT_VIEW,
+          USE_NEW_SYNC_VIEW,
+          FORWARD_PROXY_SETTINGS,
           FORMAT_BUILD_FILES_ON_SAVE,
           SHOW_ADD_FILE_TO_PROJECT,
           ALWAYS_SELECT_NEWEST_CHILD_TASK,
@@ -163,7 +184,7 @@ public class BlazeUserSettingsConfigurable extends AutoConfigurable {
   }
 
   private static ComponentFactory<LabeledComponent<String, FileSelectorWithStoredHistory>>
-      fileSelector(String historyKey, String title) {
+  fileSelector(String historyKey, String title) {
     return LabeledComponent.factory(
         () -> FileSelectorWithStoredHistory.create(historyKey, title),
         s -> Strings.nullToEmpty(s.getText()).trim(),
@@ -179,7 +200,10 @@ public class BlazeUserSettingsConfigurable extends AutoConfigurable {
     return SwingHelper.newLeftAlignedVerticalPanel(
         getFocusBehaviorSettingsUi(),
         createVerticalPanel(
+            USE_NEW_SYNC_VIEW,
+            FORWARD_PROXY_SETTINGS,
             COLLAPSE_PROJECT_VIEW,
+            ALLOW_JAVASCRIPT_TESTS,
             FORMAT_BUILD_FILES_ON_SAVE,
             SHOW_ADD_FILE_TO_PROJECT,
             ALWAYS_SELECT_NEWEST_CHILD_TASK,

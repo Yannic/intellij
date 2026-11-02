@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2026 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,6 +41,7 @@ public class BuiltInNamesProvider {
           "enumerate",
           "fail",
           "False",
+          "float",
           "getattr",
           "hasattr",
           "hash",
@@ -79,13 +80,14 @@ public class BuiltInNamesProvider {
           "exports_files",
           "glob",
           "select",
-          "workspace");
+          "workspace",
+          "include");
 
   /** Returns all built-in global symbols and function names. */
   public static ImmutableSet<String> getBuiltInNames(Project project) {
     ImmutableSet.Builder<String> builder =
         ImmutableSet.<String>builder().addAll(GLOBALS).addAll(FUNCTIONS);
-    BuildLanguageSpec spec = BuildLanguageSpecProvider.getInstance().getLanguageSpec(project);
+    BuildLanguageSpec spec = BuildLanguageSpecProvider.getInstance(project).getLanguageSpec();
     if (spec != null) {
       builder = builder.addAll(spec.getKnownRuleNames());
     }
@@ -95,7 +97,7 @@ public class BuiltInNamesProvider {
   /** Returns all built-in rules and function names. */
   public static ImmutableSet<String> getBuiltInFunctionNames(Project project) {
     ImmutableSet.Builder<String> builder = ImmutableSet.<String>builder().addAll(FUNCTIONS);
-    BuildLanguageSpec spec = BuildLanguageSpecProvider.getInstance().getLanguageSpec(project);
+    BuildLanguageSpec spec = BuildLanguageSpecProvider.getInstance(project).getLanguageSpec();
     if (spec != null) {
       builder = builder.addAll(spec.getKnownRuleNames());
     }

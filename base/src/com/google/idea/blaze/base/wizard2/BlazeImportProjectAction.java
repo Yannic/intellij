@@ -17,10 +17,27 @@ package com.google.idea.blaze.base.wizard2;
 
 import com.google.idea.blaze.base.settings.Blaze;
 import com.intellij.ide.util.projectWizard.WizardContext;
+import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.project.DumbAware;
+import com.intellij.openapi.ui.Messages;
+import java.io.IOException;
 
-class BlazeImportProjectAction extends AnAction {
+class BlazeImportProjectAction extends AnAction implements DumbAware {
+  private static final Logger logger = Logger.getInstance(BlazeImportProjectAction.class);
+
+  public BlazeImportProjectAction() {
+    super();
+    setRunInApplicationScope();
+  }
+
+  /** Explicitly set to run action in the application context (vs. project context) */
+  private void setRunInApplicationScope() {
+    getTemplatePresentation().setApplicationScope(true);
+  }
 
   @Override
   public void actionPerformed(AnActionEvent e) {
@@ -30,7 +47,6 @@ class BlazeImportProjectAction extends AnAction {
           protected ProjectImportWizardStep[] getSteps(WizardContext context) {
             return new ProjectImportWizardStep[] {
               new BlazeSelectWorkspaceImportWizardStep(context),
-              new BlazeSelectBuildSystemBinaryStep(context),
               new BlazeSelectProjectViewImportWizardStep(context),
               new BlazeEditProjectViewImportWizardStep(context)
             };
@@ -39,8 +55,8 @@ class BlazeImportProjectAction extends AnAction {
     if (!wizard.showAndGet()) {
       return;
     }
-    BlazeProjectCreator projectCreator = new BlazeProjectCreator(wizard.context, wizard.builder);
-    projectCreator.createFromWizard();
+    BlazeProjectCreator projectCreator = new BlazeProjectCreator(wizard.builder);
+    createFromWizard(projectCreator, wizard.context);
   }
 
   @Override
@@ -48,5 +64,28 @@ class BlazeImportProjectAction extends AnAction {
     super.update(e);
     e.getPresentation()
         .setText(String.format("Import %s Project...", Blaze.defaultBuildSystemName()));
+  }
+
+  @Override
+  public ActionUpdateThread getActionUpdateThread() {
+    return ActionUpdateThread.EDT;
+  }
+
+  static void createFromWizard(
+      BlazeProjectCreator blazeProjectCreator, WizardContext wizardContext) {
+    ApplicationManager.getApplication().invokeLater(() -> {
+          try {
+            blazeProjectCreator.doCreate(
+                wizardContext.getProjectFileDirectory(),
+                wizardContext.getProjectName(),
+                wizardContext.getProjectStorageFormat());
+          } catch (final IOException e) {
+            logger.error("Project creation failed", e);
+            ApplicationManager.getApplication()
+                .invokeLater(
+                    () -> Messages.showErrorDialog(e.getMessage(), "Project Initialization Failed"));
+          }
+        }
+    );
   }
 }

@@ -50,7 +50,10 @@ public class FileCaches {
             fileCache.onSync(project, context, projectView, projectData, oldProjectData, syncMode);
           });
     }
-    LocalFileSystem.getInstance().refresh(true);
+
+    if (!FileCache.EP_NAME.getExtensionList().isEmpty()) {
+      LocalFileSystem.getInstance().refresh(true);
+    }
   }
 
   /**

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2024 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package com.google.idea.blaze.base.lang.buildfile.references;
 
+import com.google.common.collect.ImmutableSet;
 import com.google.idea.blaze.base.lang.buildfile.completion.FilePathLookupElement;
 import com.google.idea.blaze.base.lang.buildfile.psi.BuildFile;
 import com.google.idea.blaze.base.lang.buildfile.psi.StringLiteral;
@@ -38,6 +39,8 @@ import javax.swing.Icon;
 
 /** The data relevant to finding file lookups. */
 public class FileLookupData {
+  private static final ImmutableSet<String> BUILDFILE_NAMES =
+      ImmutableSet.of("BUILD", "BUILD.bazel");
 
   /** The type of path string format */
   public enum PathFormat {
@@ -68,7 +71,9 @@ public class FileLookupData {
       return null;
     }
     // handle the single '/' case by calling twice.
-    String relativePath = StringUtil.trimStart(StringUtil.trimStart(originalLabel, "/"), "/");
+    String relativePath =
+        StringUtil.trimStart(
+            StringUtil.trimStart(LabelUtils.getPackagePathComponent(originalLabel), "/"), "/");
     if (relativePath.startsWith("/")) {
       return null;
     }
@@ -117,11 +122,12 @@ public class FileLookupData {
   private final BuildFile containingFile;
   @Nullable private final String containingPackage;
   public final String filePathFragment;
+  @Nullable public final String externalWorkspace;
   public final PathFormat pathFormat;
   private final QuoteType quoteType;
   @Nullable private final VirtualFileFilter fileFilter;
 
-  private FileLookupData(
+  protected FileLookupData(
       String originalLabel,
       @Nullable BuildFile containingFile,
       @Nullable String containingPackage,
@@ -137,6 +143,7 @@ public class FileLookupData {
     this.filePathFragment = filePathFragment;
     this.pathFormat = pathFormat;
     this.quoteType = quoteType;
+    this.externalWorkspace = LabelUtils.getExternalWorkspaceComponent(originalLabel);
 
     assert (pathFormat != PathFormat.PackageLocal
         || (containingPackage != null && containingFile != null));
@@ -163,8 +170,10 @@ public class FileLookupData {
         new NullableLazyValue<Icon>() {
           @Override
           protected Icon compute() {
-            if (file.findChild("BUILD") != null) {
-              return BlazeIcons.BuildFile;
+            for (String buildfileName : BUILDFILE_NAMES) {
+              if (file.findChild(buildfileName) != null) {
+                return BlazeIcons.BuildFile;
+              }
             }
             if (file.isDirectory()) {
               return PlatformIcons.FOLDER_ICON;
@@ -176,13 +185,16 @@ public class FileLookupData {
     String fullLabel =
         workspacePath != null ? getFullLabel(workspacePath.relativePath()) : file.getPath();
     String itemText = workspacePath != null ? getItemText(workspacePath.relativePath()) : fullLabel;
-    return new FilePathLookupElement(fullLabel, itemText, quoteType, icon);
+    return new FilePathLookupElement(fullLabel, itemText, quoteType, file.isDirectory(), icon);
   }
 
   private String getFullLabel(String relativePath) {
     if (pathFormat != PathFormat.PackageLocal) {
       if (pathFormat == PathFormat.NonLocal) {
         relativePath = "//" + relativePath;
+        if (externalWorkspace != null) {
+          relativePath = "@" + externalWorkspace + relativePath;
+        }
       }
       return relativePath;
     }

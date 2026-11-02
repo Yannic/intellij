@@ -30,32 +30,32 @@ import org.mockito.stubbing.Answer;
 public class ExecutionRootPathTest extends BlazeTestCase {
   @Test
   public void testSingleLevelPathEndInSlash() {
-    ExecutionRootPath executionRootPath = new ExecutionRootPath("foo");
+    ExecutionRootPath executionRootPath = ExecutionRootPath.create("foo");
     assertThat(executionRootPath.getAbsoluteOrRelativeFile()).isEqualTo(new File("foo/"));
 
-    ExecutionRootPath executionRootPath2 = new ExecutionRootPath("foo/");
+    ExecutionRootPath executionRootPath2 = ExecutionRootPath.create("foo/");
     assertThat(executionRootPath2.getAbsoluteOrRelativeFile()).isEqualTo(new File("foo/"));
   }
 
   @Test
   public void testMultiLevelPathEndInSlash() {
-    ExecutionRootPath executionRootPath = new ExecutionRootPath("foo/bar");
+    ExecutionRootPath executionRootPath = ExecutionRootPath.create("foo/bar");
     assertThat(executionRootPath.getAbsoluteOrRelativeFile()).isEqualTo(new File("foo/bar/"));
 
-    ExecutionRootPath executionRootPath2 = new ExecutionRootPath("foo/bar/");
+    ExecutionRootPath executionRootPath2 = ExecutionRootPath.create("foo/bar/");
     assertThat(executionRootPath2.getAbsoluteOrRelativeFile()).isEqualTo(new File("foo/bar/"));
   }
 
   @Test
   public void testAbsoluteFileDoesNotGetRerooted() {
-    ExecutionRootPath executionRootPath = new ExecutionRootPath("/root/foo/bar");
+    ExecutionRootPath executionRootPath = ExecutionRootPath.create("/root/foo/bar");
     File rootedFile = executionRootPath.getFileRootedAt(new File("/core/dev"));
     assertThat(rootedFile).isEqualTo(new File("/root/foo/bar"));
   }
 
   @Test
   public void testRelativeFileGetsRerooted() {
-    ExecutionRootPath executionRootPath = new ExecutionRootPath("foo/bar");
+    ExecutionRootPath executionRootPath = ExecutionRootPath.create("foo/bar");
     File rootedFile = executionRootPath.getFileRootedAt(new File("/root"));
     assertThat(rootedFile).isEqualTo(new File("/root/foo/bar"));
   }
@@ -107,10 +107,51 @@ public class ExecutionRootPathTest extends BlazeTestCase {
 
   @Test
   public void testCreateRelativePathWithOneAbsolutePathAndOneRelativePathReturnsNull2() {
-    ExecutionRootPath relativePathFragment =
-        ExecutionRootPath.createAncestorRelativePath(
-            createMockDirectory("code/lib/fastmath"), createMockDirectory("/code/lib/slowmath"));
+    final var relativePathFragment = ExecutionRootPath.createAncestorRelativePath(
+        createMockDirectory("code/lib/fastmath"),
+        createMockDirectory("/code/lib/slowmath")
+    );
+
     assertThat(relativePathFragment).isNull();
+  }
+
+  @Test
+  public void testCreateStripsProcSelfCwdPrefixToRelativePath() {
+    final var path = ExecutionRootPath.create("/proc/self/cwd/foo/bar");
+    assertThat(path.isAbsolute()).isFalse();
+    assertThat(path).isEqualTo(ExecutionRootPath.create("foo/bar"));
+  }
+
+  @Test
+  public void testCreateStripsBareProcSelfCwdMarkerToExecutionRoot() {
+    final var path = ExecutionRootPath.create("/proc/self/cwd");
+    assertThat(path.isAbsolute()).isFalse();
+    assertThat(path).isEqualTo(ExecutionRootPath.create(""));
+  }
+
+  @Test
+  public void testCreateLeavesOtherAbsolutePathsUnchanged() {
+    final var path = ExecutionRootPath.create("/usr/include");
+    assertThat(path.isAbsolute()).isTrue();
+  }
+
+  @Test
+  public void testTryCreateReturnsNullForGenuineAbsolutePath() {
+    assertThat(ExecutionRootPath.tryCreate("/usr/include")).isNull();
+  }
+
+  @Test
+  public void testTryCreateAcceptsRelativeAndProcSelfCwdPaths() {
+    assertThat(ExecutionRootPath.tryCreate("foo/bar")).isEqualTo(ExecutionRootPath.create("foo/bar"));
+    assertThat(ExecutionRootPath.tryCreate("/proc/self/cwd/foo")).isEqualTo(ExecutionRootPath.create("foo"));
+  }
+
+  @Test
+  public void testIsProcSelfCwd() {
+    assertThat(ExecutionRootPath.isProcSelfCwd("/proc/self/cwd/foo")).isTrue();
+    assertThat(ExecutionRootPath.isProcSelfCwd("/proc/self/cwd")).isTrue();
+    assertThat(ExecutionRootPath.isProcSelfCwd("/usr/include")).isFalse();
+    assertThat(ExecutionRootPath.isProcSelfCwd("not-a-path-value")).isFalse();
   }
 
   private static File createMockDirectory(String path) {

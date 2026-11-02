@@ -41,15 +41,29 @@ public class UrlUtil {
   }
 
   public static String pathToUrl(String filePath) {
+    return pathToUrl(filePath, Path.of(""));
+  }
+
+  public static String pathToUrl(String filePath, Path innerJarPath) {
     filePath = FileUtil.toSystemIndependentName(filePath);
     if (filePath.endsWith(".srcjar") || filePath.endsWith(".jar")) {
-      return URLUtil.JAR_PROTOCOL + URLUtil.SCHEME_SEPARATOR + filePath + URLUtil.JAR_SEPARATOR;
+      return URLUtil.JAR_PROTOCOL
+          + URLUtil.SCHEME_SEPARATOR
+          + filePath
+          + URLUtil.JAR_SEPARATOR
+          + innerJarPath;
     } else if (filePath.contains("src.jar!")) {
       return URLUtil.JAR_PROTOCOL + URLUtil.SCHEME_SEPARATOR + filePath;
     } else {
       return VirtualFileManager.constructUrl(
           VirtualFileSystemProvider.getInstance().getSystem().getProtocol(), filePath);
     }
+  }
+
+  public static String pathToIdeaDirectoryUrl(Path path) {
+    return VirtualFileManager.constructUrl(
+        VirtualFileSystemProvider.getInstance().getSystem().getProtocol(),
+        FileUtil.toSystemIndependentName(path.toString()));
   }
 
   /**

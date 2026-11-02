@@ -23,27 +23,27 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.idea.blaze.base.bazel.BuildSystem.BuildInvoker;
-import com.google.idea.blaze.base.bazel.BuildSystem.SyncStrategy;
 import com.google.idea.blaze.base.logging.utils.ShardStats;
 import com.google.idea.blaze.base.model.primitives.Label;
 import com.google.idea.blaze.base.model.primitives.TargetExpression;
 import com.google.idea.blaze.base.model.primitives.WildcardTargetPattern;
-import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.projectview.ProjectViewManager;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
 import com.google.idea.blaze.base.projectview.section.sections.ShardBlazeBuildsSection;
+import com.google.idea.blaze.base.projectview.section.sections.SyncManualTargetsSection;
 import com.google.idea.blaze.base.projectview.section.sections.TargetShardSizeSection;
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.Scope;
 import com.google.idea.blaze.base.scope.output.StatusOutput;
 import com.google.idea.blaze.base.scope.scopes.TimingScope;
 import com.google.idea.blaze.base.scope.scopes.TimingScope.EventType;
-import com.google.idea.blaze.base.sync.aspects.BuildResult;
+import com.google.idea.blaze.base.command.buildresult.BuildResult;
 import com.google.idea.blaze.base.sync.projectview.TargetExpressionList;
 import com.google.idea.blaze.base.sync.sharding.WildcardTargetExpander.ExpandedTargetsResult;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolver;
 import com.google.idea.common.experiments.IntExperiment;
 import com.intellij.openapi.project.Project;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -88,7 +88,9 @@ public class BlazeBuildTargetSharder {
   }
 
   private static boolean shardingRequested(ProjectViewSet projectViewSet) {
-    return projectViewSet.getScalarValue(ShardBlazeBuildsSection.KEY).orElse(false);
+    // We need to perform expansion of query targets if we are to allow for manual targets to be synced.
+    return projectViewSet.getScalarValue(ShardBlazeBuildsSection.KEY).orElse(false) ||
+            projectViewSet.getScalarValue(SyncManualTargetsSection.KEY).orElse(false);
   }
 
   /** Number of individual targets per blaze build shard. */
@@ -107,28 +109,22 @@ public class BlazeBuildTargetSharder {
     SHARD_WITHOUT_EXPANDING, // split unexpanded wildcard targets into batches
   }
 
-  private static ShardingApproach getShardingApproach(
-      SyncStrategy parallelStrategy, ProjectViewSet viewSet) {
+  private static ShardingApproach getShardingApproach(ProjectViewSet viewSet) {
     if (shardingRequested(viewSet)) {
       return ShardingApproach.EXPAND_AND_SHARD;
     }
-    if (parallelStrategy == SyncStrategy.SERIAL) {
-      return ShardingApproach.SHARD_WITHOUT_EXPANDING;
-    }
-    return ShardingApproach.EXPAND_AND_SHARD;
+    return ShardingApproach.SHARD_WITHOUT_EXPANDING;
   }
 
   /** Expand wildcard target patterns and partition the resulting target list. */
   public static ShardedTargetsResult expandAndShardTargets(
       Project project,
       BlazeContext context,
-      WorkspaceRoot workspaceRoot,
       ProjectViewSet viewSet,
       WorkspacePathResolver pathResolver,
       List<TargetExpression> targets,
-      BuildInvoker queryInvoker,
-      SyncStrategy parallelStrategy) {
-    ShardingApproach approach = getShardingApproach(parallelStrategy, viewSet);
+      BuildInvoker queryInvoker) {
+    ShardingApproach approach = getShardingApproach(viewSet);
     switch (approach) {
       case SHARD_WITHOUT_EXPANDING:
         int suggestedSize = getTargetShardSize(viewSet);
@@ -140,8 +136,7 @@ public class BlazeBuildTargetSharder {
             BuildResult.SUCCESS);
       case EXPAND_AND_SHARD:
         ExpandedTargetsResult expandedTargets =
-            expandWildcardTargets(
-                project, context, workspaceRoot, queryInvoker, viewSet, pathResolver, targets);
+            expandWildcardTargets(project, context, queryInvoker, viewSet, pathResolver, targets);
         if (expandedTargets.buildResult.status == BuildResult.Status.FATAL_ERROR) {
           return new ShardedTargetsResult(
               new ShardedTargetList(ImmutableList.of(), ShardStats.ShardingApproach.ERROR, 0),
@@ -149,8 +144,7 @@ public class BlazeBuildTargetSharder {
         }
 
         return new ShardedTargetsResult(
-            shardSingleTargets(
-                expandedTargets.singleTargets, parallelStrategy, getTargetShardSize(viewSet)),
+            shardSingleTargets(expandedTargets.singleTargets, getTargetShardSize(viewSet)),
             expandedTargets.buildResult);
       default:
         throw new IllegalStateException("Unhandled sharding approach: " + approach);
@@ -161,7 +155,6 @@ public class BlazeBuildTargetSharder {
   private static ExpandedTargetsResult expandWildcardTargets(
       Project project,
       BlazeContext parentContext,
-      WorkspaceRoot workspaceRoot,
       BuildInvoker buildInvoker,
       ProjectViewSet projectViewSet,
       WorkspacePathResolver pathResolver,
@@ -173,14 +166,13 @@ public class BlazeBuildTargetSharder {
           context.output(new StatusOutput("Sharding: expanding wildcard target patterns..."));
           context.setPropagatesErrors(false);
           return doExpandWildcardTargets(
-              project, context, workspaceRoot, buildInvoker, projectViewSet, pathResolver, targets);
+              project, context, buildInvoker, projectViewSet, pathResolver, targets);
         });
   }
 
   private static ExpandedTargetsResult doExpandWildcardTargets(
       Project project,
       BlazeContext context,
-      WorkspaceRoot workspaceRoot,
       BuildInvoker buildBinary,
       ProjectViewSet projectViewSet,
       WorkspacePathResolver pathResolver,
@@ -208,7 +200,7 @@ public class BlazeBuildTargetSharder {
     }
     ExpandedTargetsResult result =
         WildcardTargetExpander.expandToSingleTargets(
-            project, context, workspaceRoot, buildBinary, projectViewSet, fullList);
+            project, context, buildBinary, projectViewSet, fullList);
 
     // finally add back any explicitly-specified, unexcluded single targets which may have been
     // removed by the query (for example, because they have the 'manual' tag)
@@ -229,10 +221,8 @@ public class BlazeBuildTargetSharder {
    * target patterns).
    */
   @VisibleForTesting
-  static ShardedTargetList shardSingleTargets(
-      List<TargetExpression> targets, SyncStrategy syncStrategy, int shardSize) {
-    return BuildBatchingService.batchTargets(
-        canonicalizeSingleTargets(targets), syncStrategy, shardSize);
+  static ShardedTargetList shardSingleTargets(List<TargetExpression> targets, int shardSize) {
+    return BuildBatchingService.batchTargets(canonicalizeSingleTargets(targets), shardSize);
   }
 
   /**

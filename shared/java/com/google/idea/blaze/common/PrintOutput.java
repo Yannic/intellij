@@ -30,7 +30,8 @@ public class PrintOutput implements Output {
   public enum OutputType {
     NORMAL,
     LOGGED,
-    ERROR
+    ERROR,
+    PROCESS
   }
 
   public PrintOutput(@Nonnull String text, @Nonnull OutputType outputType) {
@@ -45,6 +46,11 @@ public class PrintOutput implements Output {
   @Nonnull
   public String getText() {
     return text;
+  }
+
+  @Override
+  public String toString() {
+    return getText();
   }
 
   @Nonnull
@@ -77,5 +83,9 @@ public class PrintOutput implements Output {
   @FormatMethod
   public static PrintOutput error(@FormatString String text, Object... args) {
     return new PrintOutput(String.format(text, args), OutputType.ERROR);
+  }
+
+  public static PrintOutput process(String text) {
+    return new PrintOutput(text, OutputType.PROCESS);
   }
 }

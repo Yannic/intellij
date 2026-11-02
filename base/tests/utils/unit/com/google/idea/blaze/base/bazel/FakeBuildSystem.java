@@ -19,10 +19,10 @@ import com.google.auto.value.AutoValue;
 import com.google.idea.blaze.base.command.info.BlazeInfo;
 import com.google.idea.blaze.base.model.BlazeVersionData;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
-import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.settings.BuildSystemName;
 import com.intellij.openapi.project.Project;
 import java.util.Optional;
+import java.util.Set;
 import javax.annotation.Nullable;
 
 /**
@@ -38,39 +38,29 @@ import javax.annotation.Nullable;
 public abstract class FakeBuildSystem implements BuildSystem {
 
   public static Builder builder(BuildSystemName name) {
-    return new AutoValue_FakeBuildSystem.Builder()
-        .setName(name)
-        .setSyncStrategy(SyncStrategy.SERIAL);
+    return new AutoValue_FakeBuildSystem.Builder().setName(name);
   }
 
   @Override
   public abstract BuildSystemName getName();
 
   @Nullable
-  abstract BuildInvoker getBuildInvoker();
+  abstract Optional<BuildInvoker> getBuildInvoker();
 
   @Override
-  public BuildInvoker getBuildInvoker(Project project, BlazeContext context) {
+  public Optional<BuildInvoker> getBuildInvoker(Project project, Set<BuildInvoker.Capability> requirements) {
     return getBuildInvoker();
   }
 
-  abstract Optional<BuildInvoker> getParallelBuildInvoker();
+  @Override
+  public void populateBlazeVersionData(WorkspaceRoot workspaceRoot, BlazeInfo blazeInfo, BlazeVersionData.Builder builder) { }
+
+  abstract Optional<String> getBazelVersionString();
 
   @Override
-  public Optional<BuildInvoker> getParallelBuildInvoker(Project project, BlazeContext context) {
-    return getParallelBuildInvoker();
+  public Optional<String> getBazelVersionString(BlazeInfo blazeInfo) {
+    return getBazelVersionString();
   }
-
-  @Override
-  public SyncStrategy getSyncStrategy(Project project) {
-    return getSyncStrategy();
-  }
-
-  protected abstract SyncStrategy getSyncStrategy();
-
-  @Override
-  public void populateBlazeVersionData(
-      WorkspaceRoot workspaceRoot, BlazeInfo blazeInfo, BlazeVersionData.Builder builder) {}
 
   /**
    * Builder for {@link FakeBuildSystem}. Use {@link FakeBuildSystem#builder(BuildSystemName)} to
@@ -85,8 +75,6 @@ public abstract class FakeBuildSystem implements BuildSystem {
 
     public abstract Builder setBuildInvoker(BuildInvoker value);
 
-    public abstract Builder setParallelBuildInvoker(Optional<BuildInvoker> value);
-
-    public abstract Builder setSyncStrategy(SyncStrategy value);
+    public abstract Builder setBazelVersionString(Optional<String> value);
   }
 }

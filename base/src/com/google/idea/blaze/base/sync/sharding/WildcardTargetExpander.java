@@ -15,21 +15,23 @@
  */
 package com.google.idea.blaze.base.sync.sharding;
 
+import static com.google.common.base.Verify.verify;
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.idea.blaze.base.async.FutureUtil;
-import com.google.idea.blaze.base.async.process.ExternalTask;
-import com.google.idea.blaze.base.async.process.LineProcessingOutputStream;
 import com.google.idea.blaze.base.bazel.BuildSystem.BuildInvoker;
 import com.google.idea.blaze.base.command.BlazeCommand;
 import com.google.idea.blaze.base.command.BlazeCommandName;
 import com.google.idea.blaze.base.command.BlazeFlags;
 import com.google.idea.blaze.base.command.BlazeInvocationContext;
-import com.google.idea.blaze.base.console.BlazeConsoleLineProcessorProvider;
+import com.google.idea.blaze.base.command.buildresult.BuildResult;
+import com.google.idea.blaze.base.command.buildresult.BuildResult.Status;
+import com.google.idea.blaze.base.dependencies.QueryBuilder;
 import com.google.idea.blaze.base.model.primitives.TargetExpression;
 import com.google.idea.blaze.base.model.primitives.WildcardTargetPattern;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
-import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.prefetch.PrefetchService;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
 import com.google.idea.blaze.base.query.BlazeQueryLabelKindParser;
@@ -40,13 +42,18 @@ import com.google.idea.blaze.base.scope.output.StatusOutput;
 import com.google.idea.blaze.base.scope.scopes.TimingScope;
 import com.google.idea.blaze.base.scope.scopes.TimingScope.EventType;
 import com.google.idea.blaze.base.settings.Blaze;
-import com.google.idea.blaze.base.sync.aspects.BuildResult;
-import com.google.idea.blaze.base.sync.aspects.BuildResult.Status;
+import com.google.idea.blaze.base.sync.SyncProjectTargetsHelper;
 import com.google.idea.blaze.base.sync.projectview.LanguageSupport;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolver;
+import com.google.idea.blaze.exception.BuildException;
 import com.google.idea.common.experiments.BoolExperiment;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -130,7 +137,6 @@ public class WildcardTargetExpander {
   static ExpandedTargetsResult expandToSingleTargets(
       Project project,
       BlazeContext parentContext,
-      WorkspaceRoot workspaceRoot,
       BuildInvoker buildBinary,
       ProjectViewSet projectViewSet,
       List<TargetExpression> allTargets) {
@@ -139,15 +145,13 @@ public class WildcardTargetExpander {
         context -> {
           context.push(new TimingScope("ExpandTargetsQuery", EventType.BlazeInvocation));
           context.setPropagatesErrors(false);
-          return doExpandToSingleTargets(
-              project, context, workspaceRoot, buildBinary, projectViewSet, allTargets);
+          return doExpandToSingleTargets(project, context, buildBinary, projectViewSet, allTargets);
         });
   }
 
   private static ExpandedTargetsResult doExpandToSingleTargets(
       Project project,
       BlazeContext context,
-      WorkspaceRoot workspaceRoot,
       BuildInvoker buildBinary,
       ProjectViewSet projectViewSet,
       List<TargetExpression> allTargets) {
@@ -165,12 +169,7 @@ public class WildcardTargetExpander {
                   "Expanding wildcard target patterns, shard %s of %s", i + 1, shards.size())));
       ExpandedTargetsResult result =
           queryIndividualTargets(
-              context,
-              workspaceRoot,
-              buildBinary,
-              handledRulesPredicate,
-              shard,
-              excludeManualTargets);
+              project, context, buildBinary, handledRulesPredicate, shard, excludeManualTargets);
       output = output == null ? result : ExpandedTargetsResult.merge(output, result);
       if (output.buildResult.status == Status.FATAL_ERROR) {
         return output;
@@ -197,18 +196,21 @@ public class WildcardTargetExpander {
             BlazeCommandName.BUILD,
             context,
             BlazeInvocationContext.SYNC_CONTEXT)
-        .contains("--build_manual_tests");
+        .contains("--build_manual_tests") && !SyncProjectTargetsHelper.shouldSyncManualTargets(projectView);
   }
 
   /** Runs a blaze query to expand the input target patterns to individual blaze targets. */
   private static ExpandedTargetsResult queryIndividualTargets(
+      Project project,
       BlazeContext context,
-      WorkspaceRoot workspaceRoot,
       BuildInvoker buildBinary,
       Predicate<String> handledRulesPredicate,
       List<TargetExpression> targetPatterns,
       boolean excludeManualTargets) {
-    String query = queryString(targetPatterns, excludeManualTargets);
+    final var query = new QueryBuilder()
+        .includeTargets(targetPatterns)
+        .excludeManualTag(excludeManualTargets)
+        .excludeNoIdeTag(true);
     if (query.isEmpty()) {
       // will be empty if there are no non-excluded targets
       return new ExpandedTargetsResult(ImmutableList.of(), BuildResult.SUCCESS);
@@ -217,7 +219,7 @@ public class WildcardTargetExpander {
         BlazeCommand.builder(buildBinary, BlazeCommandName.QUERY)
             .addBlazeFlags(BlazeFlags.KEEP_GOING)
             .addBlazeFlags("--output=label_kind")
-            .addBlazeFlags(query);
+            .addBlazeFlags(query.build());
 
     // it's fine to include wildcards here; they're guaranteed not to clash with actual labels.
     Set<String> explicitTargets =
@@ -228,54 +230,20 @@ public class WildcardTargetExpander {
             : t -> handledRulesPredicate.test(t.ruleType) || explicitTargets.contains(t.label);
 
     BlazeQueryLabelKindParser outputProcessor = new BlazeQueryLabelKindParser(filter);
-
-    int retVal =
-        ExternalTask.builder(workspaceRoot)
-            .addBlazeCommand(builder.build())
-            .context(context)
-            .stdout(LineProcessingOutputStream.of(outputProcessor))
-            .stderr(
-                LineProcessingOutputStream.of(
-                    BlazeConsoleLineProcessorProvider.getAllStderrLineProcessors(context)))
-            .build()
-            .run();
-
-    BuildResult buildResult = BuildResult.fromExitCode(retVal);
-    return new ExpandedTargetsResult(outputProcessor.getTargetLabels(), buildResult);
+    try (InputStream queryResultStream = buildBinary.invokeQuery(builder, context)) {
+      new BufferedReader(new InputStreamReader(queryResultStream, UTF_8))
+          .lines()
+          .forEach(outputProcessor::processLine);
+    } catch (IOException | BuildException e) {
+      Logger.getInstance(WildcardTargetExpander.class)
+          .warn("Error running blaze query to expand the input target pattern", e);
+      return new ExpandedTargetsResult(outputProcessor.getTargetLabels(), BuildResult.FATAL_ERROR);
+    }
+    return new ExpandedTargetsResult(outputProcessor.getTargetLabels(), BuildResult.SUCCESS);
   }
 
   private static Predicate<String> handledRuleTypes(ProjectViewSet projectViewSet) {
     return LanguageSupport.createWorkspaceLanguageSettings(projectViewSet)
         .getAvailableTargetKinds();
-  }
-
-  private static String queryString(List<TargetExpression> targets, boolean excludeManualTargets) {
-    StringBuilder builder = new StringBuilder();
-    for (TargetExpression target : targets) {
-      boolean excluded = target.isExcluded();
-      if (builder.length() == 0) {
-        if (excluded) {
-          continue; // an excluded target at the start of the list has no effect
-        }
-        builder.append("'").append(target).append("'");
-      } else {
-        if (excluded) {
-          builder.append(" - ");
-          // trim leading '-'
-          String excludedTarget = target.toString();
-          builder.append("'").append(excludedTarget, 1, excludedTarget.length()).append("'");
-        } else {
-          builder.append(" + ");
-          builder.append("'").append(target).append("'");
-        }
-      }
-    }
-    String targetList = builder.toString();
-    if (targetList.isEmpty()) {
-      return targetList;
-    }
-    return excludeManualTargets
-        ? String.format("attr('tags', '^((?!manual).)*$', %s)", targetList)
-        : targetList;
   }
 }

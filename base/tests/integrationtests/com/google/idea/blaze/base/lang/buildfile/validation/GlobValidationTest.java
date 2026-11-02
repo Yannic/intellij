@@ -22,10 +22,12 @@ import com.google.idea.blaze.base.lang.buildfile.psi.BuildFile;
 import com.google.idea.blaze.base.lang.buildfile.psi.GlobExpression;
 import com.google.idea.blaze.base.lang.buildfile.psi.util.PsiUtils;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
-import com.google.idea.sdkcompat.BaseSdkTestCompat;
 import com.intellij.lang.annotation.Annotation;
 import java.util.List;
 import java.util.stream.Collectors;
+
+import com.intellij.psi.PsiElement;
+import com.intellij.testFramework.fixtures.CodeInsightTestUtil;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -56,7 +58,7 @@ public class GlobValidationTest extends BuildFileIntegrationTestCase {
     BuildFile file =
         createBuildFile(
             new WorkspacePath("java/com/google/BUILD"),
-            "glob(['**/*.java'], exclude = ['test/*.java'], exclude_directories = 0)");
+            "glob(['**/*.java'], exclude = ['test/*.java'], exclude_directories = 0, allow_empty = False)");
 
     assertNoErrors(file);
   }
@@ -103,6 +105,16 @@ public class GlobValidationTest extends BuildFileIntegrationTestCase {
             "glob(['**/*.java'], exclude = ['test/*.java'], exclude_directories = true)");
 
     assertHasError(file, "exclude_directories parameter to glob must be 0 or 1");
+  }
+
+  @Test
+  public void testInvalidAllowEmptyValue() {
+    BuildFile file =
+        createBuildFile(
+            new WorkspacePath("java/com/google/BUILD"),
+            "glob(['**/*.java'], exclude = ['test/*.java'], allow_empty = 0)");
+
+    assertHasError(file, "allow_empty parameter to glob must be True or False");
   }
 
   @Test
@@ -253,7 +265,7 @@ public class GlobValidationTest extends BuildFileIntegrationTestCase {
   }
 
   private List<Annotation> validateFile(BuildFile file) {
-    return BaseSdkTestCompat.testAnnotator(
+    return CodeInsightTestUtil.testAnnotator(
         new GlobErrorAnnotator(),
         PsiUtils.findAllChildrenOfClassRecursive(file, GlobExpression.class)
             .toArray(GlobExpression[]::new));

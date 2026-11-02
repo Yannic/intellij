@@ -16,22 +16,27 @@
 package com.google.idea.blaze.base.sync;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.idea.blaze.base.issueparser.BlazeIssueParser.targetDetectionQueryParsers;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+import com.google.idea.blaze.base.async.executor.ProgressiveTaskWithProgressIndicator;
 import com.google.idea.blaze.base.bazel.BuildSystem;
 import com.google.idea.blaze.base.bazel.BuildSystem.BuildInvoker;
-import com.google.idea.blaze.base.bazel.BuildSystem.SyncStrategy;
+import com.google.idea.blaze.base.command.config.BlazeConfigException;
+import com.google.idea.blaze.base.command.config.BlazeConfigRunner;
+import com.google.idea.blaze.base.buildview.BuildViewMigration;
 import com.google.idea.blaze.base.command.BlazeInvocationContext;
 import com.google.idea.blaze.base.command.BlazeInvocationContext.ContextType;
-import com.google.idea.blaze.base.command.BlazercMigrator;
+import com.google.idea.blaze.base.command.buildresult.BuildResult;
 import com.google.idea.blaze.base.dependencies.BlazeQuerySourceToTargetProvider;
 import com.google.idea.blaze.base.dependencies.TargetInfo;
 import com.google.idea.blaze.base.io.FileOperationProvider;
 import com.google.idea.blaze.base.logging.utils.BuildPhaseSyncStats;
 import com.google.idea.blaze.base.logging.utils.ShardStats.ShardingApproach;
+import com.google.idea.blaze.base.model.BlazeConfigurationData;
 import com.google.idea.blaze.base.model.primitives.TargetExpression;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
@@ -44,32 +49,34 @@ import com.google.idea.blaze.base.scope.output.SummaryOutput;
 import com.google.idea.blaze.base.scope.output.SummaryOutput.Prefix;
 import com.google.idea.blaze.base.scope.scopes.TimingScope;
 import com.google.idea.blaze.base.scope.scopes.TimingScope.EventType;
+import com.google.idea.blaze.base.scope.scopes.ToolWindowScope;
 import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
+import com.google.idea.blaze.base.settings.BlazeUserSettings;
 import com.google.idea.blaze.base.settings.BuildSystemName;
 import com.google.idea.blaze.base.sync.SyncProjectTargetsHelper.ProjectTargets;
 import com.google.idea.blaze.base.sync.SyncScope.SyncCanceledException;
 import com.google.idea.blaze.base.sync.SyncScope.SyncFailedException;
 import com.google.idea.blaze.base.sync.aspects.BlazeBuildOutputs;
 import com.google.idea.blaze.base.sync.aspects.BlazeIdeInterface;
-import com.google.idea.blaze.base.sync.aspects.BuildResult;
 import com.google.idea.blaze.base.sync.aspects.strategy.AspectStrategy.OutputGroup;
 import com.google.idea.blaze.base.sync.projectview.ImportRoots;
 import com.google.idea.blaze.base.sync.sharding.BlazeBuildTargetSharder;
 import com.google.idea.blaze.base.sync.sharding.BlazeBuildTargetSharder.ShardedTargetsResult;
 import com.google.idea.blaze.base.sync.sharding.ShardedTargetList;
 import com.google.idea.blaze.base.sync.sharding.SuggestBuildShardingNotification;
-import com.google.idea.blaze.base.sync.workspace.WorkingSet;
+import com.google.idea.blaze.base.toolwindow.Task;
 import com.google.idea.blaze.common.PrintOutput;
 import com.google.idea.common.experiments.BoolExperiment;
-import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.text.StringUtil;
 import java.io.File;
 import java.util.Collection;
 import java.util.List;
-import java.util.Set;
+import java.util.Locale;
+import java.util.concurrent.ExecutionException;
+import org.jetbrains.annotations.Nullable;
 
 /** Runs the 'blaze build' phase of sync. */
 public final class BuildPhaseSyncTask {
@@ -91,7 +98,7 @@ public final class BuildPhaseSyncTask {
       int buildId,
       BlazeContext context,
       BuildSystem buildSystem)
-      throws SyncCanceledException, SyncFailedException {
+      throws SyncCanceledException, SyncFailedException, ExecutionException, InterruptedException {
     BuildPhaseSyncTask task =
         new BuildPhaseSyncTask(project, syncParams, projectState, buildId, buildSystem);
     return task.run(context);
@@ -125,17 +132,14 @@ public final class BuildPhaseSyncTask {
   }
 
   private BlazeSyncBuildResult run(BlazeContext parentContext)
-      throws SyncCanceledException, SyncFailedException {
+      throws SyncCanceledException, SyncFailedException, ExecutionException, InterruptedException {
     // run under a child context to capture all timing information before finalizing the stats
-    BlazeContext context = BlazeContext.create(parentContext);
-    try {
+    try (BlazeContext context = BlazeContext.create(parentContext)) {
       TimingScope timingScope = new TimingScope("Build phase", EventType.Other);
       timingScope.addScopeListener(
           (events, totalTime) -> buildStats.setTimedEvents(events).setTotalTime(totalTime));
       context.push(timingScope);
       doRun(context);
-    } finally {
-      context.endScope();
     }
     return resultBuilder.setBuildPhaseStats(ImmutableList.of(buildStats.build())).build();
   }
@@ -147,16 +151,9 @@ public final class BuildPhaseSyncTask {
         .forEach(l -> l.buildStarted(project, context, fullProjectSync, buildId, targets));
   }
 
-  private void doRun(BlazeContext context) throws SyncFailedException, SyncCanceledException {
+  private void doRun(BlazeContext context) throws SyncFailedException, SyncCanceledException, ExecutionException, InterruptedException {
     List<TargetExpression> targets = Lists.newArrayList();
     ProjectViewSet viewSet = projectState.getProjectViewSet();
-    if (syncParams.addWorkingSet() && projectState.getWorkingSet() != null) {
-      Collection<TargetExpression> workingSetTargets = getWorkingSetTargets(context);
-      if (!workingSetTargets.isEmpty()) {
-        targets.addAll(workingSetTargets);
-        printTargets(context, "working set", workingSetTargets);
-      }
-    }
     if (syncParams.addProjectViewTargets()) {
       ProjectTargets projectTargets =
           SyncProjectTargetsHelper.getProjectTargets(
@@ -190,38 +187,20 @@ public final class BuildPhaseSyncTask {
     buildStats.setTargets(targets);
     notifyBuildStarted(context, syncParams.addProjectViewTargets(), ImmutableList.copyOf(targets));
 
-    BuildInvoker defaultInvoker = buildSystem.getDefaultInvoker(project, context);
+    BuildInvoker defaultInvoker = buildSystem.getDefaultInvoker(project);
 
     ShardedTargetsResult shardedTargetsResult =
         BlazeBuildTargetSharder.expandAndShardTargets(
             project,
             context,
-            workspaceRoot,
             viewSet,
             projectState.getWorkspacePathResolver(),
             targets,
-            defaultInvoker,
-            buildSystem.getSyncStrategy(project));
+            defaultInvoker);
     if (shardedTargetsResult.buildResult.status == BuildResult.Status.FATAL_ERROR) {
       throw new SyncFailedException();
     }
     ShardedTargetList shardedTargets = shardedTargetsResult.shardedTargets;
-
-    boolean parallel;
-    SyncStrategy strategy = buildSystem.getSyncStrategy(project);
-    switch (strategy) {
-      case PARALLEL:
-        parallel = true;
-        break;
-      case DECIDE_AUTOMATICALLY:
-        parallel = shardedTargets.shardCount() > 1;
-        break;
-      case SERIAL:
-        parallel = false;
-        break;
-      default:
-        throw new IllegalStateException("Invalid sync strategy: " + strategy);
-    }
 
     if (!shardedTargetsResult
         .shardedTargets
@@ -232,77 +211,65 @@ public final class BuildPhaseSyncTask {
           shardedTargets.shardStats().actualTargetSizePerShard().stream()
               .mapToInt(Integer::intValue)
               .sum();
-      printShardingSummary(context, targetCount, shardedTargets.shardCount(), parallel);
+      printShardingSummary(context, targetCount, shardedTargets.shardCount());
     }
 
-    BuildInvoker syncBuildInvoker =
-        parallel
-            ? buildSystem.getParallelBuildInvoker(project, context).orElse(defaultInvoker)
-            : defaultInvoker;
-    final BlazercMigrator blazercMigrator = new BlazercMigrator(project);
-    if (!syncBuildInvoker.supportsHomeBlazerc() && blazercMigrator.needMigration()) {
-      context.output(
-          SummaryOutput.output(Prefix.INFO, "No .blazerc found at workspace root!").log().dedupe());
-      ApplicationManager.getApplication()
-          .invokeAndWait(() -> blazercMigrator.promptAndMigrate(context));
-    }
-    resultBuilder.setBlazeInfo(syncBuildInvoker.getBlazeInfo());
+    BuildInvoker syncBuildInvoker = defaultInvoker;
+    resultBuilder.setBlazeInfo(syncBuildInvoker.getBlazeInfo(context));
 
     buildStats
         .setSyncSharded(shardedTargets.shardCount() > 1)
         .setShardCount(shardedTargets.shardCount())
         .setShardStats(shardedTargets.shardStats())
-        .setParallelBuilds(syncBuildInvoker.supportsParallelism());
+        .setParallelBuilds(
+            syncBuildInvoker
+                .getCapabilities()
+                .contains(BuildInvoker.Capability.BUILD_PARALLEL_SHARDS));
 
-    BlazeBuildOutputs blazeBuildResult =
-        getBlazeBuildResult(context, viewSet, shardedTargets, syncBuildInvoker);
+    final var blazeBuildResult = getBlazeBuildResult(context, viewSet, shardedTargets, syncBuildInvoker, false);
     resultBuilder.setBuildResult(blazeBuildResult);
     buildStats
-        .setBuildResult(blazeBuildResult.buildResult)
-        .setBuildIds(blazeBuildResult.getBuildIds())
-        .setBuildBinaryType(syncBuildInvoker.getType())
-        .setBepBytesConsumed(blazeBuildResult.bepBytesConsumed);
+        .setBuildResult(blazeBuildResult.buildResult())
+        .setBuildBinaryType(syncBuildInvoker.getType());
 
     if (context.isCancelled()) {
       throw new SyncCanceledException();
     }
-    String invocationResultMsg = "Build invocation result: " + blazeBuildResult.buildResult.status;
-    if (blazeBuildResult.buildResult.status == BuildResult.Status.FATAL_ERROR) {
+    String invocationResultMsg =
+        "Build invocation result: " + blazeBuildResult.buildResult().status;
+    if (blazeBuildResult.buildResult().status == BuildResult.Status.FATAL_ERROR) {
       context.setHasError();
-      if (blazeBuildResult.buildResult.outOfMemory()) {
+      if (blazeBuildResult.buildResult().outOfMemory()) {
         SuggestBuildShardingNotification.syncOutOfMemoryError(project, context);
       }
 
-      if (!continueSyncOnOom.getValue() || blazeBuildResult.artifacts.isEmpty()) {
+      if (!continueSyncOnOom.getValue() || blazeBuildResult.isEmpty()) {
         context.output(PrintOutput.error(invocationResultMsg));
         throw new SyncFailedException();
       }
     }
     context.output(PrintOutput.log(invocationResultMsg));
+
+    // fetch bazel configs, returns null if no build was issued
+    resultBuilder.setConfigurationData(getBlazeConfigData(context, defaultInvoker));
   }
 
-  private void printShardingSummary(
-      BlazeContext context, int targetCount, int shardCount, boolean parallel) {
+  private void printShardingSummary(BlazeContext context, int targetCount, int shardCount) {
     if (targetCount == 0 || shardCount == 0) {
       return;
     }
     context.output(
         SummaryOutput.output(
                 Prefix.INFO,
-                String.format(
-                    "Found %d %s, split into %d %s",
+                String.format(Locale.ROOT,
+                              "Found %d %s, split into %d %s",
                     targetCount,
                     StringUtil.pluralize("target", targetCount),
                     shardCount,
                     StringUtil.pluralize("shard", shardCount)))
             .log());
     if (shardCount > 1) {
-      context.output(
-          SummaryOutput.output(
-                  Prefix.INFO,
-                  String.format(
-                      "Building multiple shards in %s...", parallel ? "parallel" : "serial"))
-              .log());
+      context.output(SummaryOutput.output(Prefix.INFO, "Building multiple shards in serial...").log());
     }
   }
 
@@ -313,7 +280,7 @@ public final class BuildPhaseSyncTask {
 
     targets.stream().limit(50).forEach(target -> sb.append("  ").append(target).append('\n'));
     if (targets.size() > 50) {
-      sb.append(String.format("\nPlus %d more targets", targets.size() - 50));
+      sb.append(String.format(Locale.ROOT, "\nPlus %d more targets", targets.size() - 50));
     }
     context.output(PrintOutput.log(sb.toString()));
   }
@@ -324,46 +291,13 @@ public final class BuildPhaseSyncTask {
         .build();
   }
 
-  private static final BoolExperiment queryWorkingSetTargets =
-      new BoolExperiment("query.working.set.targets", true);
-
-  private Collection<TargetExpression> getWorkingSetTargets(BlazeContext context)
-      throws SyncCanceledException, SyncFailedException {
-    WorkingSet workingSet = projectState.getWorkingSet();
-    if (workingSet == null) {
-      return ImmutableList.of();
-    }
-    ImmutableList<WorkspacePath> sources =
-        ImmutableList.<WorkspacePath>builder()
-            .addAll(workingSet.addedFiles)
-            .addAll(workingSet.modifiedFiles)
-            .build();
-
-    if (queryWorkingSetTargets.getValue()) {
-      return findTargetsBuildingSourceFiles(sources, context);
-    }
-
-    BuildTargetFinder buildTargetFinder =
-        new BuildTargetFinder(project, workspaceRoot, getImportRoots());
-
-    Set<TargetExpression> result = Sets.newHashSet();
-    for (WorkspacePath workspacePath : sources) {
-      File file = workspaceRoot.fileForPath(workspacePath);
-      TargetExpression targetExpression = buildTargetFinder.findTargetForFile(file);
-      if (targetExpression != null) {
-        result.add(targetExpression);
-      }
-    }
-    return result;
-  }
-
   /**
    * Finds the list of targets to sync for the given source files. Ignores directories, and sources
    * not covered by the .bazelproject directories.
    */
   private ImmutableList<TargetExpression> findTargetsBuildingSourceFiles(
       Collection<WorkspacePath> sources, BlazeContext context)
-      throws SyncCanceledException, SyncFailedException {
+      throws SyncCanceledException, SyncFailedException, ExecutionException, InterruptedException {
     ImportRoots importRoots = getImportRoots();
     ImmutableList.Builder<TargetExpression> targets = ImmutableList.builder();
     ImmutableList.Builder<WorkspacePath> pathsToQuery = ImmutableList.builder();
@@ -381,17 +315,32 @@ public final class BuildPhaseSyncTask {
       }
       pathsToQuery.add(source);
     }
+    String title = "Query targets building source files";
     List<TargetInfo> result =
-        Scope.push(
-            context,
-            childContext -> {
-              childContext.push(new TimingScope("QuerySourceTargets", EventType.BlazeInvocation));
-              childContext.output(new StatusOutput("Querying targets building source files..."));
-              // We don't want blaze build errors to fail the whole sync
-              childContext.setPropagatesErrors(false);
-              return BlazeQuerySourceToTargetProvider.getTargetsBuildingSourceFiles(
-                  project, pathsToQuery.build(), childContext, ContextType.Sync);
-            });
+        ProgressiveTaskWithProgressIndicator.builder(project, title)
+            .setModality(BuildViewMigration.progressModality())
+            .submitTaskWithResult(
+                indicator -> Scope.push(
+                    context,
+                    childContext -> {
+                      childContext.push(new TimingScope("QuerySourceTargets", EventType.BlazeInvocation));
+                      childContext.output(new StatusOutput("Querying targets building source files..."));
+                      var scope = childContext.getScope(ToolWindowScope.class);
+                      if(scope != null) { // If ToolWindowScope doesn't already exist, it means the output is not supposed to be printed to toolwindow (for example in tests)
+                        var task = new Task(project, title, Task.Type.SYNC, scope.getTask());
+                        var newScope = new ToolWindowScope.Builder(project, task)
+                            .setProgressIndicator(indicator)
+                            .setPopupBehavior(BlazeUserSettings.FocusBehavior.ON_ERROR)
+                            .setIssueParsers(targetDetectionQueryParsers(project, WorkspaceRoot.fromProject(project)))
+                            .build();
+                        childContext.push(newScope);
+                      }
+
+                      // We don't want blaze build errors to fail the whole sync
+                      childContext.setPropagatesErrors(false);
+                      return BlazeQuerySourceToTargetProvider.getTargetsBuildingSourceFiles(
+                          project, pathsToQuery.build(), childContext, ContextType.Sync);
+                    })).get(); // We still call no-timeout waitFor in ExternalTask.run()
     if (context.isCancelled()) {
       throw new SyncCanceledException();
     }
@@ -399,7 +348,7 @@ public final class BuildPhaseSyncTask {
       String fileBugSuggestion =
           Blaze.getBuildSystemName(project) == BuildSystemName.Bazel
               ? ""
-              : " Please run 'Blaze > File a Bug'";
+              : " Please run 'Help > File a Bug'";
       IssueOutput.error(
               "Querying blaze targets building project source files failed." + fileBugSuggestion)
           .submit(context);
@@ -413,33 +362,56 @@ public final class BuildPhaseSyncTask {
       BlazeContext parentContext,
       ProjectViewSet projectViewSet,
       ShardedTargetList shardedTargets,
-      BuildInvoker invoker) {
+      BuildInvoker invoker,
+      boolean invokeParallel
+  ) {
+    if (!syncParams.syncMode().involvesBlazeBuild()) {
+      return BlazeBuildOutputs.noOutputs(BuildResult.SUCCESS);
+    }
 
-    return Scope.push(
-        parentContext,
-        context -> {
-          context.push(new TimingScope("BlazeBuild", EventType.BlazeInvocation));
-          context.output(
-              new StatusOutput(
-                  String.format(
-                      "Building %s %s targets...",
-                      shardedTargets.getTotalTargets(),
-                      Blaze.getBuildSystemName(project).getName())));
-          // We don't want blaze build errors to fail the whole sync
-          context.setPropagatesErrors(false);
+    return Scope.push(parentContext, context -> {
+      context.push(new TimingScope("BlazeBuild", EventType.BlazeInvocation));
+      context.output(
+          new StatusOutput(
+              String.format(
+                  "Building %s %s targets...",
+                  shardedTargets.getTotalTargets(),
+                  Blaze.getBuildSystemName(project).getName())));
+      // We don't want blaze build errors to fail the whole sync
+      context.setPropagatesErrors(false);
 
-          BlazeIdeInterface blazeIdeInterface = BlazeIdeInterface.getInstance();
-          return blazeIdeInterface.build(
-              project,
-              context,
-              workspaceRoot,
-              projectState.getBlazeVersionData(),
-              invoker,
-              projectViewSet,
-              shardedTargets,
-              projectState.getLanguageSettings(),
-              ImmutableSet.of(OutputGroup.RESOLVE, OutputGroup.INFO),
-              BlazeInvocationContext.SYNC_CONTEXT);
-        });
+      BlazeIdeInterface blazeIdeInterface = BlazeIdeInterface.getInstance();
+      return blazeIdeInterface.build(
+          project,
+          context,
+          workspaceRoot,
+          projectState.getBlazeVersionData(),
+          invoker,
+          projectViewSet,
+          shardedTargets,
+          projectState.getLanguageSettings(),
+          ImmutableSet.of(OutputGroup.RESOLVE, OutputGroup.INFO),
+          BlazeInvocationContext.SYNC_CONTEXT,
+          invokeParallel);
+    });
+  }
+
+  @Nullable
+  private BlazeConfigurationData getBlazeConfigData(BlazeContext parentContext, BuildInvoker invoker) {
+    if (!syncParams.syncMode().involvesBlazeBuild()) {
+      return null;
+    }
+
+    return Scope.push(parentContext, context -> {
+      context.push(new TimingScope("BlazeConfig", EventType.BlazeInvocation));
+      context.setPropagatesErrors(false);
+
+      try {
+        return BlazeConfigRunner.getInstance().runBlazeConfig(project, invoker, context);
+      } catch (BlazeConfigException e) {
+        IssueOutput.warn("Failed to fetch configuration data").withThrowable(e).submit(context);
+        return null;
+      }
+    });
   }
 }

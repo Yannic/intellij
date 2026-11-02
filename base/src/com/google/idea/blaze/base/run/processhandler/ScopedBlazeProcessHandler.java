@@ -23,7 +23,7 @@ import com.google.idea.blaze.base.filecache.FileCaches;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.sync.aspects.BlazeBuildOutputs;
-import com.google.idea.blaze.base.sync.aspects.BuildResult;
+import com.google.idea.blaze.base.command.buildresult.BuildResult;
 import com.google.idea.blaze.base.util.ProcessGroupUtil;
 import com.intellij.execution.ExecutionException;
 import com.intellij.execution.Platform;
@@ -63,7 +63,7 @@ public final class ScopedBlazeProcessHandler extends KillableColoredProcessHandl
   /**
    * Construct a process handler and a context to be used for the life of the process.
    *
-   * @param blazeCommand the blaze command to run
+   * @param command the blaze command to run
    * @param workspaceRoot workspace root
    * @param scopedProcessHandlerDelegate delegate methods that will be run with the process's
    *     context.
@@ -71,16 +71,7 @@ public final class ScopedBlazeProcessHandler extends KillableColoredProcessHandl
    */
   public ScopedBlazeProcessHandler(
       Project project,
-      BlazeCommand blazeCommand,
-      WorkspaceRoot workspaceRoot,
-      ScopedProcessHandlerDelegate scopedProcessHandlerDelegate)
-      throws ExecutionException {
-    this(project, blazeCommand.toList(), workspaceRoot, scopedProcessHandlerDelegate);
-  }
-
-  public ScopedBlazeProcessHandler(
-      Project project,
-      List<String> command,
+      GeneralCommandLine command,
       WorkspaceRoot workspaceRoot,
       ScopedProcessHandlerDelegate scopedProcessHandlerDelegate)
       throws ExecutionException {
@@ -132,7 +123,7 @@ public final class ScopedBlazeProcessHandler extends KillableColoredProcessHandl
   }
 
   private static class CommandLineWithRemappedPath extends GeneralCommandLine {
-    CommandLineWithRemappedPath(List<String> command) {
+    CommandLineWithRemappedPath(GeneralCommandLine command) {
       super(command);
     }
 

@@ -82,7 +82,7 @@ public class BlazeDartSyncPlugin implements BlazeSyncPlugin {
       ModuleEditor moduleEditor,
       Module workspaceModule,
       ModifiableRootModel workspaceModifiableModel) {
-    if (!blazeProjectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.DART)) {
+    if (!blazeProjectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.DART)) {
       return;
     }
 
@@ -99,14 +99,14 @@ public class BlazeDartSyncPlugin implements BlazeSyncPlugin {
   @Override
   public boolean validate(
       Project project, BlazeContext context, BlazeProjectData blazeProjectData) {
-    if (!blazeProjectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.DART)) {
+    if (!blazeProjectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.DART)) {
       return true;
     }
     if (!PluginUtils.isPluginEnabled(DART_PLUGIN_ID)) {
       IssueOutput.error(
               "The Dart plugin is required for Dart support. "
                   + "Click here to install/enable the plugin and restart")
-          .navigatable(PluginUtils.installOrEnablePluginNavigable(DART_PLUGIN_ID))
+          .withNavigatable(PluginUtils.installOrEnablePluginNavigable(DART_PLUGIN_ID))
           .submit(context);
       return false;
     }
@@ -117,7 +117,7 @@ public class BlazeDartSyncPlugin implements BlazeSyncPlugin {
   @Override
   public LibrarySource getLibrarySource(
       ProjectViewSet projectViewSet, BlazeProjectData blazeProjectData) {
-    if (!blazeProjectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.DART)) {
+    if (!blazeProjectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.DART)) {
       return null;
     }
     return BlazeDartLibrarySource.INSTANCE;

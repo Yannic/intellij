@@ -16,7 +16,9 @@
 package com.google.idea.blaze.base.sync;
 
 import com.google.auto.value.AutoValue;
+import com.google.idea.blaze.base.command.info.BlazeInfo;
 import com.google.idea.blaze.base.model.BlazeVersionData;
+import com.google.idea.blaze.base.model.ExternalWorkspaceData;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
 import com.google.idea.blaze.base.sync.projectview.WorkspaceLanguageSettings;
 import com.google.idea.blaze.base.sync.workspace.WorkingSet;
@@ -33,10 +35,14 @@ public abstract class SyncProjectState {
 
   public abstract BlazeVersionData getBlazeVersionData();
 
+  public abstract BlazeInfo getBlazeInfo();
+
   @Nullable
   public abstract WorkingSet getWorkingSet();
 
   public abstract WorkspacePathResolver getWorkspacePathResolver();
+
+  public abstract ExternalWorkspaceData getExternalWorkspaceData();
 
   public static Builder builder() {
     return new AutoValue_SyncProjectState.Builder();
@@ -51,9 +57,13 @@ public abstract class SyncProjectState {
 
     public abstract Builder setBlazeVersionData(BlazeVersionData blazeVersionData);
 
+    public abstract Builder setBlazeInfo(BlazeInfo blazeInfo);
+
     public abstract Builder setWorkingSet(@Nullable WorkingSet workingSet);
 
     public abstract Builder setWorkspacePathResolver(WorkspacePathResolver pathResolver);
+
+    public abstract Builder setExternalWorkspaceData(ExternalWorkspaceData externalWorkspaceData);
 
     public abstract SyncProjectState build();
   }

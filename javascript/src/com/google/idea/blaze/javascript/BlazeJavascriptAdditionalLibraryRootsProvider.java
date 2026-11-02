@@ -21,7 +21,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.io.Files;
 import com.google.idea.blaze.base.command.buildresult.OutputArtifactResolver;
 import com.google.idea.blaze.base.ideinfo.ArtifactLocation;
-import com.google.idea.blaze.base.ideinfo.JsIdeInfo;
 import com.google.idea.blaze.base.ideinfo.TargetIdeInfo;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
@@ -58,13 +57,13 @@ final class BlazeJavascriptAdditionalLibraryRootsProvider extends BlazeExternalL
 
   static ImmutableList<File> getLibraryFiles(
       Project project, BlazeProjectData projectData, ImportRoots importRoots) {
-    if (!JavascriptPrefetchFileSource.languageActive(projectData.getWorkspaceLanguageSettings())) {
+    if (!JavascriptPrefetchFileSource.languageActive(projectData.workspaceLanguageSettings())) {
       return ImmutableList.of();
     }
     Set<String> jsExtensions = JavascriptPrefetchFileSource.getJavascriptExtensions();
     Predicate<ArtifactLocation> isJs =
         (location) -> {
-          String extension = Files.getFileExtension(location.getRelativePath());
+          String extension = Files.getFileExtension(location.relativePath());
           return jsExtensions.contains(extension);
         };
     Predicate<ArtifactLocation> isExternal =
@@ -72,14 +71,13 @@ final class BlazeJavascriptAdditionalLibraryRootsProvider extends BlazeExternalL
           if (!location.isSource()) {
             return true;
           }
-          WorkspacePath workspacePath = WorkspacePath.createIfValid(location.getRelativePath());
+          WorkspacePath workspacePath = WorkspacePath.createIfValid(location.relativePath());
           return workspacePath == null || !importRoots.containsWorkspacePath(workspacePath);
         };
-    ArtifactLocationDecoder decoder = projectData.getArtifactLocationDecoder();
-    return projectData.getTargetMap().targets().stream()
+    ArtifactLocationDecoder decoder = projectData.artifactLocationDecoder();
+    return projectData.targetMap().targets().stream()
         .filter(t -> t.getJsIdeInfo() != null)
-        .map(TargetIdeInfo::getJsIdeInfo)
-        .map(JsIdeInfo::getSources)
+        .map(TargetIdeInfo::getSources)
         .flatMap(Collection::stream)
         .filter(isJs)
         .filter(isExternal)

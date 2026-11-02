@@ -28,6 +28,7 @@ import com.intellij.ide.errorTreeView.impl.ErrorTreeViewConfiguration;
 import com.intellij.openapi.actionSystem.ActionManager;
 import com.intellij.openapi.actionSystem.ActionPlaces;
 import com.intellij.openapi.actionSystem.ActionToolbar;
+import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DataContext;
 import com.intellij.openapi.actionSystem.DataKey;
@@ -168,6 +169,10 @@ class BlazeProblemsViewPanel extends NewErrorTreeViewPanel {
         : ActionCallback.DONE;
   }
 
+  public Project getProject(){
+    return project;
+  }
+
   private class AutoscrollToConsoleAction extends ToggleAction implements DumbAware {
     public AutoscrollToConsoleAction() {
       super("Autoscroll to console", "Autoscroll to console", AllIcons.Debugger.Console);
@@ -181,6 +186,11 @@ class BlazeProblemsViewPanel extends NewErrorTreeViewPanel {
     @Override
     public void setSelected(AnActionEvent event, boolean flag) {
       configuration.setAutoscrollToConsole(flag);
+    }
+
+    @Override
+    public ActionUpdateThread getActionUpdateThread() {
+      return ActionUpdateThread.EDT;
     }
   }
 
@@ -207,7 +217,7 @@ class BlazeProblemsViewPanel extends NewErrorTreeViewPanel {
 
     ShowWarningsAction() {
       super(IdeBundle.message("action.show.warnings"), null, AllIcons.General.ShowWarning);
-      configuration = ErrorTreeViewConfiguration.getInstance(myProject);
+      configuration = ErrorTreeViewConfiguration.getInstance(getProject());
     }
 
     @Override
@@ -221,6 +231,11 @@ class BlazeProblemsViewPanel extends NewErrorTreeViewPanel {
         configuration.setHideWarnings(!showWarnings);
         reload();
       }
+    }
+
+    @Override
+    public ActionUpdateThread getActionUpdateThread() {
+      return ActionUpdateThread.EDT;
     }
   }
 

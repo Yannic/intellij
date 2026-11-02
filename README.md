@@ -1,68 +1,89 @@
-# An IntelliJ plugin for [Bazel](http://bazel.build) projects
+# A CLion plugin for [Bazel](http://bazel.build) projects
 
-This is an early-access version of our Bazel plugins for IntelliJ,
-Android Studio, and CLion.
+As of July 1, 2025, the Bazel for IntelliJ and Bazel for CLion plugins are maintained by JetBrains. These plugins are not offered by nor affiliated with Google. The Bazel trademark and logo are the property of Google LLC.
 
-The Bazel plugin uploaded to the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/8609-bazel) 
-regularly from the state of this repository. See the [releases](https://github.com/bazelbuild/intellij/releases) 
-tab for more information.
+This project uses binary bundles licensed under [JetBrains User Agreement](https://www.jetbrains.com/legal/docs/toolbox/user/).
 
-**Please see our latest community update for Bazel IntelliJ plugin:**
-[Announcing Bazel & JetBrains co-maintenance of IntelliJ IDEA Bazel Plugin](https://blog.bazel.build/2022/07/11/Bazel-IntelliJ-Update.html#announcing-bazel-jetbrains-co-maintenance-of-intellij-idea-bazel).
+The Bazel for CLion plugin is uploaded to the [JetBrains Marketplace](https://jb.gg/bazel-for-clion) regularly from the state of this repository. See the [releases](https://github.com/bazelbuild/intellij/releases) tab for more information.
 
 ## Community
 The Bazel project is hosting a Special Interest Group (SIG) for Bazel IntelliJ IDE plug-in. Details about the SIG and 
 how to join the discussion can be found in the [SIG charter](https://github.com/bazelbuild/community/blob/main/sigs/bazel-intellij/CHARTER.md).
 
 ## Support
-
-See the [documentation entry](https://ij.bazel.build/docs/bazel-support.html)
+See the [documentation entry](https://github.com/bazelbuild/intellij/blob/master/docs/index.md)
 on the plugin support across JetBrains products, languages, and operating
 systems.
+
+## Source Code Locations
+The Bazel for CLion plugin is built and released from the [master branch](https://github.com/bazelbuild/intellij) of this repository. 
+
+The Bazel for IntelliJ plugin is built and released from the [ijwb branch](https://github.com/bazelbuild/intellij/tree/ijwb) of this repository. However, maintenance for the IntelliJ plugin is limited to ensuring compatibility with new versions of JetBrains IDEs. No new features or bug fixes will be provided.
+
+The Bazel for Android Studio plugin is built and released from [AOSP](https://android.googlesource.com/platform/tools/adt/idea/+/refs/heads/mirror-goog-studio-main/aswb/) — that is the only location with up-to-date sources. The [google branch](https://github.com/bazelbuild/intellij/tree/google) is deprecated, and the [aswb branch](https://github.com/bazelbuild/intellij/tree/aswb) holds only an outdated snapshot of the Android Studio plugin from when it was last hosted in this repository. Thus, do not use it as a reference for current Android Studio plugin code.
+
+Although the code in this repository and in AOSP share the same structure and core components, they have diverged from each other. 
+
+- Changes for the CLion plugin are *only* merged into the master branch of this repository. Users can request 
+  that certain fixes which are also needed for the Android Studio plugin get merged into the AOSP project. This will 
+  require the internal teams’ approval. 
+- Changes made by the internal Google teams are automatically exported to AOSP. These commits were regularly 
+  cherry-picked to the master branch. See the next paragraph for details.
+- The Android Studio plugin was removed from the master branch and is now only available in the AOSP. 
+
+### Cherry-picks from AOSP to this project
+
+After the migration of the Android Studio plugin to [AOSP](https://android.googlesource.com/platform/tools/adt/idea/+/refs/heads/mirror-goog-studio-main/aswb/), this process was interrupted for approximately five months.
+
+In November 2024, many changes from AOSP were cherry-picked in [6965](https://github.com/bazelbuild/intellij/pull/6965).
+Starting from that point, we have been making our best effort to apply AOSP changes to the [master branch](https://github.com/bazelbuild/intellij/tree/master).
+
+For this purpose, we use the Python tool [LeFrosch/intellij-aosp-merge](https://github.com/LeFrosch/intellij-aosp-merge), which is capable of adjusting paths from AOSP to this project's layout and allows us to compare revisions in AOSP and here.
+
+Status of picked and skipped commits could be found in the following [googledoc](https://jb.gg/aosp-picks).
+
+Due to multiple regressions caused by picks from the AOSP, cherry-picks have been halted for the time being.
 
 ## Installation
 
 You can find our plugin in the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/8609-bazel)
 or directly from the IDE by going to `Settings -> Plugins -> Marketplace`, and searching for `Bazel`.
 
-### Beta versions
-
-Beta versions are usually uploaded to the Beta channel 2 weeks before they become full releases. Ways to install them: 
-- download and install them manually from the [Beta channel page](https://plugins.jetbrains.com/plugin/8609-bazel/versions/beta) on JetBrains Marketplace
-- add the Beta channel to the IDE under `Settings -> Plugins -> Gear Icon -> Manage Plugin repositories` and add one of the following URLs depending on your product. 
-  You can now find the latest Beta under `Settings -> Plugins -> Marketplace` or update the Bazel plugin to Beta if you already installed it.
-  - IntelliJ IDEA -> `https://plugins.jetbrains.com/plugins/beta/8609`
-  - CLion -> `https://plugins.jetbrains.com/plugins/beta/9554`
-  - Android Studio -> `https://plugins.jetbrains.com/plugins/beta/9185`
-
 ## Usage
+We recommend watching [this video](https://www.youtube.com/watch?v=GV_KwWK3Qy8) to familiarize yourself with the plugin's features.
 
 To import an existing Bazel project, choose `Import Bazel Project`,
 and follow the instructions in the project import wizard.
 
-Detailed docs are available [here](http://ij.bazel.build).
+Detailed docs are available [here](https://github.com/bazelbuild/intellij/blob/master/docs/index.md).
 
+## Known issues
+
+### Python debugging
+Please read this comment https://github.com/bazelbuild/intellij/issues/4745#issue-1668398619
+
+### Remote Development
+To properly set up Remote Development (https://www.jetbrains.com/remote-development/), follow these steps:
+1. Create an empty project on the remote machine (this can be just an empty directory).
+2. Import the project using Remote Development.
+3. Install the Bazel Plugin on the host machine.
+4. Close the project.
+5. Open the initially intended project.
 
 ## Building the plugin
+Install Bazel, then build the target `//clwb:clwb_bazel_zip`:
+```
+bazel build //clwb:clwb_bazel_zip --define=ij_product=clion-oss-latest-stable
+```
 
-Install Bazel, then build the target `*:*_bazel_zip` for your desired product:
+from the project root. This will create a plugin zip file at `bazel-bin/clwb/clwb_bazel.zip`, which can be installed directly from the IDE. 
 
-* `bazel build //ijwb:ijwb_bazel_zip --define=ij_product=intellij-ue-oss-latest-stable`
-* `bazel build //clwb:clwb_bazel_zip --define=ij_product=clion-oss-latest-stable`
-* `bazel build //aswb:aswb_bazel_zip --define=ij_product=android-studio-oss-latest-stable`
+If the IDE refuses to load the plugin because of version issues, specify the correct `ij_product`. These are in the form `clion-oss-<VERSION>` with `<VERSION>` being one of 
+* `oldest-stable`
+* `latest-stable`
+* `under-dev`.
 
-from the project root. This will create a plugin zip file at
-`bazel-bin/<PRODUCT>/<PRODUCT>_bazel.zip`, which can be installed directly
-from the IDE. `<PRODUCT>` can be one of `ijwb, clwb, aswb`.
-
-If the IDE refuses to load the plugin because of version issues, specify the
-correct `ij_product`. These are in the form `<IDE>-oss-<VERSION>` with 
-  * `<IDE>` being one of `intellij-ue, intellij, clion, android-studio`, 
-  * `<VERSION>` being one of `oldest-stable, latest-stable, under-dev`.
-
-Note that there is a difference between `intellij` and `intellij-ue`.
-`ue` stands for IntelliJ Ultimate Edition and contains additional 
-features for JavaScript as well as Go.
+Alternatively, for you can set `ij_product` to direct CLion versions, for example `clion-2026.2`.
 
 `<IDE>-oss-oldest-stable` and `<IDE>-oss-latest-stable` are aliases for the two IDE versions
 that the plugin is officially compatible with at a given time. `<IDE>-oss-latest-stable` usually 

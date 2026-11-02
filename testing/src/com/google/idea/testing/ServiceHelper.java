@@ -15,8 +15,9 @@
  */
 package com.google.idea.testing;
 
-import com.google.idea.sdkcompat.BaseSdkTestCompat;
 import com.intellij.lang.LanguageExtensionPoint;
+import com.intellij.mock.MockApplication;
+import com.intellij.mock.MockProject;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.ApplicationManager;
@@ -39,15 +40,41 @@ public class ServiceHelper {
       ExtensionPointName<T> name, Class<T> clazz, Disposable parentDisposable) {
     ExtensionsArea area = Extensions.getRootArea();
     String epName = name.getName();
-    area.registerExtensionPoint(epName, clazz.getName(), ExtensionPoint.Kind.INTERFACE);
+    area.registerExtensionPoint(epName, clazz.getName(), ExtensionPoint.Kind.INTERFACE, false);
+    Disposer.register(parentDisposable, () -> area.unregisterExtensionPoint(epName));
+  }
+
+  public static <T> void registerProjectExtensionPoint(
+      Project project, ExtensionPointName<T> name, Class<T> clazz, Disposable parentDisposable) {
+    ExtensionsArea area = project.getExtensionArea();
+    String epName = name.getName();
+    area.registerExtensionPoint(epName, clazz.getName(), ExtensionPoint.Kind.INTERFACE, false);
     Disposer.register(parentDisposable, () -> area.unregisterExtensionPoint(epName));
   }
 
   public static <T> void registerExtension(
       ExtensionPointName<T> name, T instance, Disposable parentDisposable) {
     ExtensionPoint<T> ep = Extensions.getRootArea().getExtensionPoint(name);
-    ep.registerExtension(instance);
-    Disposer.register(parentDisposable, () -> ep.unregisterExtension(instance));
+    ep.registerExtension(instance, parentDisposable);
+  }
+
+  public static <T> void unregisterExtension(
+      ExtensionPointName<T> name, Class<? extends T> clazz, Disposable parentDisposable) {
+    final var ep = name.getPoint();
+    for (final var extension : name.getExtensions()) {
+      if (!extension.getClass().equals(clazz)) {
+        continue;
+      }
+
+      ep.unregisterExtension(extension);
+      Disposer.register(parentDisposable, () -> ep.registerExtension(extension));
+    }
+  }
+
+  public static <T> void registerProjectExtension(
+      Project project, ExtensionPointName<T> name, T instance, Disposable parentDisposable) {
+    ExtensionPoint<T> ep = project.getExtensionArea().getExtensionPoint(name);
+    ep.registerExtension(instance, parentDisposable);
   }
 
   public static <T> void registerExtensionFirst(
@@ -81,53 +108,6 @@ public class ServiceHelper {
     registerService(project, key, implementation, parentDisposable);
   }
 
-  public static <T> void registerApplicationComponent(
-      Class<T> key, T implementation, Disposable parentDisposable) {
-    Application application = ApplicationManager.getApplication();
-    if (application instanceof ComponentManagerImpl) {
-      if (!application.hasComponent(key)) {
-        // registers component from scratch
-        ServiceContainerUtil.registerComponentImplementation(
-            application, key, key, /*shouldBeRegistered=*/ false);
-      }
-      // replaces existing component
-      ServiceContainerUtil.registerComponentInstance(
-          application, key, implementation, parentDisposable);
-    } else {
-      registerComponentInstance(
-          (MutablePicoContainer) application.getPicoContainer(),
-          key,
-          implementation,
-          parentDisposable);
-    }
-  }
-
-  public static <T> void registerProjectComponent(
-      Project project, Class<T> key, T implementation, Disposable parentDisposable) {
-    if (project instanceof ComponentManagerImpl) {
-      ServiceContainerUtil.registerComponentInstance(
-          project, key, implementation, parentDisposable);
-    } else {
-      registerComponentInstance(
-          (MutablePicoContainer) project.getPicoContainer(), key, implementation, parentDisposable);
-    }
-  }
-
-  private static <T> void registerComponentInstance(
-      MutablePicoContainer container, Class<T> key, T implementation, Disposable parentDisposable) {
-    Object old = ApplicationManager.getApplication().getComponent(key);
-    container.unregisterComponent(key.getName());
-    container.registerComponentInstance(key.getName(), implementation);
-    Disposer.register(
-        parentDisposable,
-        () -> {
-          container.unregisterComponent(key.getName());
-          if (old != null) {
-            container.registerComponentInstance(key.getName(), old);
-          }
-        });
-  }
-
   private static <T> void registerService(
       ComponentManager componentManager,
       Class<T> key,
@@ -145,7 +125,6 @@ public class ServiceHelper {
       Disposer.register(parentDisposable, (Disposable) implementation);
     }
     Disposer.register(
-        parentDisposable,
-        () -> BaseSdkTestCompat.unregisterComponent(componentManager, key));
+        parentDisposable, () -> ((ComponentManagerImpl) componentManager).unregisterComponent(key));
   }
 }

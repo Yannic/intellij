@@ -29,7 +29,6 @@ import com.google.idea.blaze.base.model.primitives.WorkspacePath;
 import com.google.idea.testing.ServiceHelper;
 import com.intellij.codeInsight.lookup.LookupElement;
 import com.intellij.openapi.editor.Editor;
-import com.intellij.openapi.project.Project;
 import javax.annotation.Nullable;
 import org.junit.Before;
 import org.junit.Test;
@@ -46,7 +45,7 @@ public class BuiltInFunctionAttributeCompletionContributorTest
   @Before
   public final void before() {
     specProvider = new MockBuildLanguageSpecProvider();
-    registerApplicationService(BuildLanguageSpecProvider.class, specProvider);
+    registerProjectService(BuildLanguageSpecProvider.class, specProvider);
   }
 
   @Test
@@ -59,7 +58,7 @@ public class BuiltInFunctionAttributeCompletionContributorTest
     editorTest.setCaretPosition(editor, 0, "sh_binary(".length());
 
     String[] completionItems = editorTest.getCompletionItemsAsStrings();
-    assertThat(completionItems).asList().containsAllOf("name", "deps", "srcs", "data");
+    assertThat(completionItems).asList().containsAtLeast("name", "deps", "srcs", "data");
   }
 
   @Test
@@ -130,7 +129,7 @@ public class BuiltInFunctionAttributeCompletionContributorTest
     editorTest.setCaretPosition(editor, 0, "sh_binary(name = 'bin', ".length());
 
     String[] completionItems = editorTest.getCompletionItemsAsStrings();
-    assertThat(completionItems).asList().containsAllOf("deps", "srcs", "data");
+    assertThat(completionItems).asList().containsAtLeast("deps", "srcs", "data");
     assertThat(completionItems).asList().doesNotContain("name");
   }
 
@@ -167,7 +166,7 @@ public class BuiltInFunctionAttributeCompletionContributorTest
     editorTest.setCaretPosition(editor, 0, "native.sh_binary(".length());
 
     String[] completionItems = editorTest.getCompletionItemsAsStrings();
-    assertThat(completionItems).asList().containsAllOf("name", "deps", "srcs", "data");
+    assertThat(completionItems).asList().containsAtLeast("name", "deps", "srcs", "data");
   }
 
   private void setRuleAndAttributes(String ruleName, String... attributes) {
@@ -191,7 +190,7 @@ public class BuiltInFunctionAttributeCompletionContributorTest
 
     @Nullable
     @Override
-    public BuildLanguageSpec getLanguageSpec(Project project) {
+    public BuildLanguageSpec getLanguageSpec() {
       return languageSpec;
     }
   }

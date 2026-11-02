@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2025 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,105 +17,69 @@ package com.google.idea.blaze.base.sync.workspace;
 
 import com.google.common.collect.ImmutableList;
 import com.google.idea.blaze.base.bazel.BuildSystemProvider;
+import com.google.idea.blaze.base.ideinfo.TargetMap;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.primitives.ExecutionRootPath;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import java.io.File;
+import java.io.IOException;
 import javax.annotation.Nullable;
+import org.jetbrains.annotations.NotNull;
 
 /**
  * Converts execution-root-relative paths to absolute files with a minimum of file system calls
  * (typically none).
  *
- * <p>Files which exist both underneath the execution root and within the workspace will be resolved
- * to workspace paths.
+ * <p>Files which exist both underneath the execution root and within a workspace will be resolved
+  * to paths within their workspace. This prevents those paths from being broken when a different
+  * target is built.
  */
-public class ExecutionRootPathResolver {
+public interface ExecutionRootPathResolver {
 
-  private final ImmutableList<String> buildArtifactDirectories;
-  private final File executionRoot;
-  private final WorkspacePathResolver workspacePathResolver;
-
-  public ExecutionRootPathResolver(
-      BuildSystemProvider buildSystemProvider,
-      WorkspaceRoot workspaceRoot,
-      File executionRoot,
-      WorkspacePathResolver workspacePathResolver) {
-    this.buildArtifactDirectories = buildArtifactDirectories(buildSystemProvider, workspaceRoot);
-    this.executionRoot = executionRoot;
-    this.workspacePathResolver = workspacePathResolver;
-  }
+  File externalPath = new File("external");
 
   @Nullable
-  public static ExecutionRootPathResolver fromProject(Project project) {
-    BlazeProjectData projectData =
-        BlazeProjectDataManager.getInstance(project).getBlazeProjectData();
+  static ExecutionRootPathResolver fromProject(Project project) {
+    final var projectData = BlazeProjectDataManager.getInstance(project).getBlazeProjectData();
+
     if (projectData == null) {
       return null;
     }
-    return new ExecutionRootPathResolver(
+
+    return fromProjectData(project, projectData);
+  }
+
+  static ExecutionRootPathResolver fromProjectData(Project project, BlazeProjectData projectData) {
+    return new ExecutionRootPathResolverImpl(
         Blaze.getBuildSystemProvider(project),
         WorkspaceRoot.fromProject(project),
-        projectData.getBlazeInfo().getExecutionRoot(),
-        projectData.getWorkspacePathResolver());
+        projectData.blazeInfo().getExecutionRoot(),
+        projectData.blazeInfo().getOutputBase(),
+        projectData.workspacePathResolver(),
+        projectData.targetMap()
+    );
   }
 
-  private static ImmutableList<String> buildArtifactDirectories(
-      BuildSystemProvider buildSystemProvider, WorkspaceRoot workspaceRoot) {
-    return buildSystemProvider.buildArtifactDirectories(workspaceRoot);
-  }
-
-  public File resolveExecutionRootPath(ExecutionRootPath path) {
-    if (path.isAbsolute()) {
-      return path.getAbsoluteOrRelativeFile();
-    }
-    if (isInWorkspace(path)) {
-      return workspacePathResolver.resolveToFile(path.getAbsoluteOrRelativeFile().getPath());
-    }
-    return path.getFileRootedAt(executionRoot);
-  }
+  File resolveExecutionRootPath(ExecutionRootPath path);
 
   /**
-   * This method should be used for directories. Returns all workspace files corresponding to the
-   * given execution-root-relative path. If the file does not exist inside the workspace (e.g. for
-   * blaze output files or external workspace files), returns the path rooted in the execution root.
+   * This method should be used for directories. Returns all workspace files corresponding to the given
+   * execution-root-relative path. If the file does not exist inside a workspace (e.g. for blaze output files), returns
+   * the path rooted in the execution root.
    */
-  public ImmutableList<File> resolveToIncludeDirectories(ExecutionRootPath path) {
-    if (path.isAbsolute()) {
-      return ImmutableList.of(path.getAbsoluteOrRelativeFile());
-    }
-    if (isInWorkspace(path)) {
-      WorkspacePath workspacePath =
-          WorkspacePath.createIfValid(path.getAbsoluteOrRelativeFile().getPath());
-      if (workspacePath != null) {
-        return workspacePathResolver.resolveToIncludeDirectories(workspacePath);
-      } else {
-        return ImmutableList.of();
-      }
-    }
-    return ImmutableList.of(path.getFileRootedAt(executionRoot));
-  }
+  ImmutableList<File> resolveToIncludeDirectories(ExecutionRootPath path);
 
-  public File getExecutionRoot() {
-    return executionRoot;
-  }
+  /**
+   * Resolves ExecutionRootPath to external workspace location and in case if item in external workspace is a link to
+   * workspace root then follows it and returns a path to workspace root
+   */
+  @NotNull
+  ImmutableList<File> resolveToExternalWorkspaceWithSymbolicLinkResolution(ExecutionRootPath path);
 
-  private boolean isInWorkspace(ExecutionRootPath path) {
-    String firstPathComponent = getFirstPathComponent(path.getAbsoluteOrRelativeFile().getPath());
-    return !buildArtifactDirectories.contains(firstPathComponent)
-        && !isExternalWorkspacePath(firstPathComponent);
-  }
-
-  private static String getFirstPathComponent(String path) {
-    int index = path.indexOf(File.separatorChar);
-    return index == -1 ? path : path.substring(0, index);
-  }
-
-  private static boolean isExternalWorkspacePath(String firstPathComponent) {
-    return firstPathComponent.equals("external");
-  }
+  File getExecutionRoot();
 }

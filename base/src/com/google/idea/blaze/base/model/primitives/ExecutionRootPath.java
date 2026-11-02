@@ -15,68 +15,113 @@
  */
 package com.google.idea.blaze.base.model.primitives;
 
-import com.google.common.base.Objects;
+import com.google.auto.value.AutoValue;
+import com.google.auto.value.extension.toprettystring.ToPrettyString;
 import com.google.idea.blaze.base.ideinfo.ProjectDataInterner;
 import com.google.idea.blaze.base.ideinfo.ProtoWrapper;
 import com.intellij.openapi.util.io.FileUtil;
 import java.io.File;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import javax.annotation.Nullable;
 
 /**
- * An absolute or relative path returned from Blaze. If it is a relative path, it is relative to the
- * execution root.
+ * An absolute or relative path returned from Blaze. If it is a relative path, it is relative to the execution root.
  */
-public final class ExecutionRootPath implements ProtoWrapper<String> {
-  private final File path;
+@AutoValue
+public abstract class ExecutionRootPath implements ProtoWrapper<String> {
 
-  public ExecutionRootPath(String path) {
-    this.path = new File(path);
-  }
+  private static final Path BAZEL_OUT = Path.of("bazel-out");
+  private static final Path BIN = Path.of("bin");
 
-  public ExecutionRootPath(File path) {
-    this.path = path;
-  }
+  /**
+   * Marker Bazel emits for paths relative to the execution root.
+   */
+  public static final Path PROC_SELF_CWD = Path.of("/proc", "self", "cwd");
 
-  public File getAbsoluteOrRelativeFile() {
-    return path;
-  }
+  public abstract Path path();
 
-  public boolean isAbsolute() {
-    return path.isAbsolute();
-  }
-
-  public File getFileRootedAt(File absoluteRoot) {
-    if (path.isAbsolute()) {
-      return path;
+  public static ExecutionRootPath create(Path path) {
+    // strip the /proc/self/cwd marker so it becomes an execution-root-relative path
+    if (isProcSelfCwd(path)) {
+      path = PROC_SELF_CWD.relativize(path);
     }
-    return new File(absoluteRoot, path.getPath());
+
+    return new AutoValue_ExecutionRootPath(path);
   }
 
-  @Override
-  public boolean equals(Object o) {
-    if (this == o) {
-      return true;
-    }
-    if (o == null || getClass() != o.getClass()) {
+  public static boolean isProcSelfCwd(Path path) {
+    return path.startsWith(PROC_SELF_CWD);
+  }
+
+  public static boolean isProcSelfCwd(String value) {
+    try {
+      return isProcSelfCwd(Path.of(value));
+    } catch (InvalidPathException e) {
       return false;
     }
-    ExecutionRootPath that = (ExecutionRootPath) o;
-    return Objects.equal(path, that.path);
   }
 
-  @Override
-  public int hashCode() {
-    return Objects.hashCode(path);
+  public static ExecutionRootPath create(String path) {
+    return create(Path.of(path));
   }
 
-  @Override
-  public String toString() {
-    return "ExecutionRootPath{" + "path='" + path + '\'' + '}';
+  public static ExecutionRootPath create(File file) {
+    return create(file.toPath());
   }
 
   /**
-   * Returns the relative {@link ExecutionRootPath} if {@code root} is an ancestor of {@code path}
-   * otherwise returns null.
+   * Returns null for genuine absolute paths which must be used as-is, and for
+   * invalid paths. Correctly resolves /proc/self/cwd references.
+   */
+  public static @Nullable ExecutionRootPath tryCreate(@Nullable String location) {
+    if (location == null) {
+      return null;
+    }
+
+    Path path;
+    try {
+      path = Path.of(location);
+    } catch (InvalidPathException e) {
+      return null;
+    }
+
+    if (isProcSelfCwd(path) || !path.isAbsolute()) {
+      return create(path);
+    } else {
+      return null;
+    }
+  }
+
+  @Deprecated
+  public File getAbsoluteOrRelativeFile() {
+    return path().toFile();
+  }
+
+  public boolean isAbsolute() {
+    return path().isAbsolute();
+  }
+
+  @Deprecated
+  public File getFileRootedAt(File absoluteRoot) {
+    final var path = path();
+    if (path.isAbsolute()) {
+      return path.toFile();
+    }
+    return new File(absoluteRoot, path.toString());
+  }
+
+  public Path getRootedAt(Path absoluteRoot) {
+    final var path = path();
+    if (path.isAbsolute()) {
+      return path;
+    }
+    return absoluteRoot.resolve(path);
+  }
+
+  /**
+   * Returns the relative {@link ExecutionRootPath} if {@code root} is an ancestor of {@code path} otherwise returns
+   * null.
    */
   @Nullable
   public static ExecutionRootPath createAncestorRelativePath(File root, File path) {
@@ -89,70 +134,85 @@ public final class ExecutionRootPath implements ProtoWrapper<String> {
     if (!isAncestor(root.getPath(), path.getPath(), /* strict= */ false)) {
       return null;
     }
-    String relativePath =
-        FileUtil.getRelativePath(
-            root.getAbsolutePath(), path.getAbsolutePath(), File.separatorChar);
+    String relativePath = FileUtil.getRelativePath(root.getAbsolutePath(), path.getAbsolutePath(), File.separatorChar);
     if (relativePath == null) {
       return null;
     }
-    return ProjectDataInterner.intern(new ExecutionRootPath(new File(relativePath)));
+    return ProjectDataInterner.intern(ExecutionRootPath.create(relativePath));
   }
 
   /**
-   * @param possibleParent
-   * @param possibleChild
-   * @param strict if {@code false} then this method returns {@code true} if {@code possibleParent}
-   *     equals to {@code possibleChild}.
+   * If strict is false then this method returns true if the possibleParent is equal to possibleChild.
    */
-  public static boolean isAncestor(
-      ExecutionRootPath possibleParent, ExecutionRootPath possibleChild, boolean strict) {
+  public static boolean isAncestor(ExecutionRootPath possibleParent, ExecutionRootPath possibleChild, boolean strict) {
     return isAncestor(
         possibleParent.getAbsoluteOrRelativeFile().getPath(),
         possibleChild.getAbsoluteOrRelativeFile().getPath(),
-        strict);
+        strict
+    );
   }
 
   /**
-   * @param possibleParentPath
-   * @param possibleChild
-   * @param strict if {@code false} then this method returns {@code true} if {@code possibleParent}
-   *     equals to {@code possibleChild}.
+   * If strict is false then this method returns true if the possibleParent is equal to possibleChild.
    */
-  public static boolean isAncestor(
-      String possibleParentPath, ExecutionRootPath possibleChild, boolean strict) {
-    return isAncestor(
-        possibleParentPath, possibleChild.getAbsoluteOrRelativeFile().getPath(), strict);
+  public static boolean isAncestor(String possibleParentPath, ExecutionRootPath possibleChild, boolean strict) {
+    return isAncestor(possibleParentPath, possibleChild.getAbsoluteOrRelativeFile().getPath(), strict);
   }
 
   /**
-   * @param possibleParent
-   * @param possibleChildPath
-   * @param strict if {@code false} then this method returns {@code true} if {@code possibleParent}
-   *     equals to {@code possibleChild}.
+   * If strict is false then this method returns true if the possibleParent is equal to possibleChild.
    */
-  public static boolean isAncestor(
-      ExecutionRootPath possibleParent, String possibleChildPath, boolean strict) {
-    return isAncestor(
-        possibleParent.getAbsoluteOrRelativeFile().getPath(), possibleChildPath, strict);
+  public static boolean isAncestor(ExecutionRootPath possibleParent, String possibleChildPath, boolean strict) {
+    return isAncestor(possibleParent.getAbsoluteOrRelativeFile().getPath(), possibleChildPath, strict);
   }
 
   /**
-   * @param possibleParentPath
-   * @param possibleChildPath
-   * @param strict if {@code false} then this method returns {@code true} if {@code possibleParent}
-   *     equals to {@code possibleChild}.
+   * If strict is false then this method returns true if the possibleParent is equal to possibleChild.
    */
   public static boolean isAncestor(
       String possibleParentPath, String possibleChildPath, boolean strict) {
     return FileUtil.isAncestor(possibleParentPath, possibleChildPath, strict);
   }
 
+  public static boolean pathsEqual(ExecutionRootPath a, ExecutionRootPath b) {
+    return FileUtil.pathsEqual(a.getAbsoluteOrRelativeFile().getPath(), b.getAbsoluteOrRelativeFile().getPath());
+  }
+
   public static ExecutionRootPath fromProto(String proto) {
-    return ProjectDataInterner.intern(new ExecutionRootPath(proto));
+    return ProjectDataInterner.intern(ExecutionRootPath.create(proto));
+  }
+
+  public static @Nullable ExecutionRootPath fromNullableProto(@Nullable String proto) {
+    if (proto == null || proto.isBlank()) {
+      return null;
+    }
+
+    return fromProto(proto);
   }
 
   @Override
   public String toProto() {
-    return path.getPath();
+    return path().toString();
+  }
+
+  @ToPrettyString
+  public String toPrettyString() {
+    return path().toString();
+  }
+
+  public boolean isBazelOut() {
+    return path().equals(BAZEL_OUT);
+  }
+
+  public boolean isInBazelOut() {
+    return path().startsWith(BAZEL_OUT);
+  }
+
+  public boolean isBazelBin() {
+    return isInBazelOut() && path().getNameCount() == 3 && path().getName(2).equals(BIN);
+  }
+
+  public boolean isInBazelBin() {
+    return isInBazelOut() && path().getNameCount() >= 3 && path().getName(2).equals(BIN);
   }
 }

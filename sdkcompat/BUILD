@@ -1,11 +1,12 @@
 # Description: Indirections for SDK changes to the underlying platform library.
 
-load("//intellij_platform_sdk:build_defs.bzl", "select_for_plugin_api")
+load("@rules_java//java:defs.bzl", "java_library")
 load(
     "//:build-visibility.bzl",
     "SDK_COMPAT_VISIBILITY",
     "create_sdkcompat_visibility_package",
 )
+load("//intellij_platform_sdk:build_defs.bzl", "select_for_version")
 
 licenses(["notice"])
 
@@ -14,25 +15,18 @@ create_sdkcompat_visibility_package()
 java_library(
     name = "sdkcompat",
     visibility = SDK_COMPAT_VISIBILITY,
-    exports = select_for_plugin_api({
-        "android-studio-2021.3": ["//sdkcompat/v213"],
-        "android-studio-2022.1": ["//sdkcompat/v221"],
-        "android-studio-2022.2": ["//sdkcompat/v222"],
-        "android-studio-dev": ["//sdkcompat/asdev"],
-        "intellij-2021.3": ["//sdkcompat/v213"],
-        "intellij-ue-2021.3": ["//sdkcompat/v213"],
-        "intellij-2022.1": ["//sdkcompat/v221"],
-        "intellij-ue-2022.1": ["//sdkcompat/v221"],
-        "intellij-2022.2": ["//sdkcompat/v222"],
-        "intellij-ue-2022.2": ["//sdkcompat/v222"],
-        "intellij-2022.3": ["//sdkcompat/v223"],
-        "intellij-ue-2022.3": ["//sdkcompat/v223"],
-        "intellij-2023.1": ["//sdkcompat/v231"],
-        "intellij-ue-2023.1": ["//sdkcompat/v231"],
-        "clion-2021.3": ["//sdkcompat/v213"],
-        "clion-2022.1": ["//sdkcompat/v221"],
-        "clion-2022.2": ["//sdkcompat/v222"],
-        "clion-2022.3": ["//sdkcompat/v223"],
-        "clion-2023.1": ["//sdkcompat/v231"],
+    exports = select_for_version({
+        "2026.2": ["//sdkcompat/v262"],
+        "2026.3": ["//sdkcompat/v263"],
+    }),
+)
+
+# needs to be a separate target since radler sources are not always available
+java_library(
+    name = "radler",
+    visibility = SDK_COMPAT_VISIBILITY,
+    exports = select_for_version({
+        "2026.2": ["//sdkcompat/v262:v262_radler"],
+        "2026.3": ["//sdkcompat/v263:v263_radler"],
     }),
 )

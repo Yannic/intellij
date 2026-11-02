@@ -21,6 +21,7 @@ import com.google.idea.blaze.base.ideinfo.ArtifactLocation;
 import com.google.idea.blaze.base.model.primitives.Kind;
 import com.google.idea.blaze.base.model.primitives.Label;
 import com.google.idea.blaze.base.model.primitives.RuleType;
+import com.intellij.openapi.diagnostic.Logger;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
@@ -31,6 +32,9 @@ import javax.annotation.Nullable;
  * output, and the per-target data provided by a global dependency index.
  */
 public class TargetInfo {
+
+  private static final Logger LOG = Logger.getInstance(TargetInfo.class);
+
   public final Label label;
   public final String kindString;
   @Nullable public final TestSize testSize;
@@ -56,6 +60,10 @@ public class TargetInfo {
   @Nullable
   public Kind getKind() {
     return Kind.fromRuleName(kindString);
+  }
+
+  public Label getLabel() {
+    return label;
   }
 
   /** Returns this targets sources, or Optional#empty if they're not known. */
@@ -160,4 +168,5 @@ public class TargetInfo {
       return new TargetInfo(label, kindString, testSize, testClass, syncTime, sources);
     }
   }
+
 }

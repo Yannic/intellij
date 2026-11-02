@@ -104,7 +104,7 @@ public class BlazeJavascriptSyncPlugin implements BlazeSyncPlugin {
   @Nullable
   @Override
   public SourceFolderProvider getSourceFolderProvider(BlazeProjectData projectData) {
-    if (!projectData.getWorkspaceLanguageSettings().isWorkspaceType(WorkspaceType.JAVASCRIPT)) {
+    if (!projectData.workspaceLanguageSettings().isWorkspaceType(WorkspaceType.JAVASCRIPT)) {
       return null;
     }
     return GenericSourceFolderProvider.INSTANCE;
@@ -121,7 +121,7 @@ public class BlazeJavascriptSyncPlugin implements BlazeSyncPlugin {
       ModuleEditor moduleEditor,
       Module workspaceModule,
       ModifiableRootModel workspaceModifiableModel) {
-    if (!blazeProjectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.JAVASCRIPT)
+    if (!blazeProjectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.JAVASCRIPT)
         || BlazeJavascriptLibrarySource.JS_LIBRARY_KIND == null) {
       return;
     }
@@ -153,7 +153,7 @@ public class BlazeJavascriptSyncPlugin implements BlazeSyncPlugin {
   public LibrarySource getLibrarySource(
       ProjectViewSet projectViewSet, BlazeProjectData blazeProjectData) {
     if (!blazeProjectData
-        .getWorkspaceLanguageSettings()
+        .workspaceLanguageSettings()
         .isLanguageActive(LanguageClass.JAVASCRIPT)) {
       return null;
     }
@@ -164,7 +164,7 @@ public class BlazeJavascriptSyncPlugin implements BlazeSyncPlugin {
   public boolean validate(
       Project project, BlazeContext context, BlazeProjectData blazeProjectData) {
     if (!blazeProjectData
-        .getWorkspaceLanguageSettings()
+        .workspaceLanguageSettings()
         .isLanguageActive(LanguageClass.JAVASCRIPT)) {
       return true;
     }
@@ -173,7 +173,7 @@ public class BlazeJavascriptSyncPlugin implements BlazeSyncPlugin {
       IssueOutput.error(
               "The JavaScript plugin is required for JavaScript support. "
                   + "Click here to install/enable the plugin and restart")
-          .navigatable(PluginUtils.installOrEnablePluginNavigable(JAVASCRIPT_PLUGIN_ID))
+          .withNavigatable(PluginUtils.installOrEnablePluginNavigable(JAVASCRIPT_PLUGIN_ID))
           .submit(context);
       return false;
     }

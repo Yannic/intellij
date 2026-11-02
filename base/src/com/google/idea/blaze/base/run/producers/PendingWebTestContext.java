@@ -26,6 +26,8 @@ import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.run.BlazeCommandRunConfiguration;
 import com.google.idea.blaze.base.run.ExecutorType;
 import com.google.idea.blaze.base.run.PendingRunConfigurationContext;
+import com.google.idea.blaze.base.settings.Blaze;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
 import com.google.idea.blaze.base.targetmaps.ReverseDependencyMap;
 import com.google.idea.common.experiments.BoolExperiment;
@@ -66,9 +68,13 @@ public class PendingWebTestContext extends TestContext implements PendingRunConf
       ImmutableSet<ExecutorType> supportedExecutors,
       TargetInfo target,
       PsiElement sourceElement,
-      ImmutableList<BlazeFlagsModification> blazeFlags,
+      @Nullable String testFilter,
       @Nullable String description) {
     if (!findWebTestContext.getValue()) {
+      return null;
+    }
+    // TODO(b/274800785): Add query sync support
+    if (Blaze.getProjectType(project) != ProjectType.ASPECT_SYNC) {
       return null;
     }
     ImmutableList<TargetInfo> wrapperTests = getWebTestWrappers(project, target);
@@ -76,10 +82,10 @@ public class PendingWebTestContext extends TestContext implements PendingRunConf
       return null;
     } else if (wrapperTests.size() == 1) {
       return new KnownTargetTestContext(
-          wrapperTests.get(0), sourceElement, blazeFlags, description);
+          wrapperTests.get(0), sourceElement, testFilter, description);
     }
     return new PendingWebTestContext(
-        wrapperTests, supportedExecutors, sourceElement, blazeFlags, description);
+        wrapperTests, supportedExecutors, sourceElement, testFilter, description);
   }
 
   private final ImmutableList<TargetInfo> wrapperTests;
@@ -89,9 +95,9 @@ public class PendingWebTestContext extends TestContext implements PendingRunConf
       ImmutableList<TargetInfo> wrapperTests,
       ImmutableSet<ExecutorType> supportedExecutors,
       PsiElement sourceElement,
-      ImmutableList<BlazeFlagsModification> blazeFlags,
+      @Nullable String testFilter,
       @Nullable String description) {
-    super(sourceElement, blazeFlags, description);
+    super(sourceElement, testFilter, description);
     this.wrapperTests = wrapperTests;
     this.supportedExecutors = supportedExecutors;
   }
@@ -103,7 +109,7 @@ public class PendingWebTestContext extends TestContext implements PendingRunConf
     if (projectData == null) {
       return ImmutableList.of();
     }
-    TargetMap targetMap = projectData.getTargetMap();
+    TargetMap targetMap = projectData.targetMap();
     return ReverseDependencyMap.get(project)
         .get(TargetKey.forPlainTarget(wrappedTest.label))
         .stream()
@@ -164,7 +170,7 @@ public class PendingWebTestContext extends TestContext implements PendingRunConf
     // Changing the description here prevents rerun,
     // due to RunnerAndConfigurationSettings being tied to description.
     RunConfigurationContext context =
-        new KnownTargetTestContext(wrapperTest, sourceElement, blazeFlags, description);
+        new KnownTargetTestContext(wrapperTest, sourceElement, testFilter, description);
     if (context.setupRunConfiguration(config)) {
       config.clearPendingContext();
       rerun.run();

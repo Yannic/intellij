@@ -15,92 +15,118 @@
  */
 package com.google.idea.blaze.base.command;
 
-import com.google.common.base.Joiner;
+import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.idea.blaze.base.bazel.BuildSystem.BuildInvoker;
 import com.google.idea.blaze.base.model.primitives.TargetExpression;
+
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
-import javax.annotation.concurrent.Immutable;
+import java.util.Map;
+import java.util.Optional;
 
 /** A command to issue to Blaze/Bazel on the command line. */
-@Immutable
-public final class BlazeCommand {
+@AutoValue
+public abstract class BlazeCommand {
 
-  private final String binaryPath;
-  private final BlazeCommandName name;
-  private final ImmutableList<String> blazeCmdlineFlags;
-  private final ImmutableList<String> blazeStartupFlags;
+  /**
+   * @deprecated Binary path is now resolved by BazelExecService at execution time.
+   */
+  @Deprecated
+  public abstract Path binary();
 
-  private BlazeCommand(
-      String binaryPath,
-      BlazeCommandName name,
-      ImmutableList<String> blazeStartupFlags,
-      ImmutableList<String> blazeCmdlineFlags) {
-    this.binaryPath = binaryPath;
-    this.name = name;
-    this.blazeCmdlineFlags = blazeCmdlineFlags;
-    this.blazeStartupFlags = blazeStartupFlags;
-  }
+  public abstract BlazeCommandName name();
 
-  public BlazeCommandName getName() {
-    return name;
-  }
+  public abstract ImmutableList<String> cmdlineFlags();
+
+  public abstract ImmutableList<String> startupFlags();
+
+  public abstract Optional<Path> workspaceRoot();
+
+  public abstract ImmutableMap<String, String> environment();
 
   public ImmutableList<String> toArgumentList() {
     return ImmutableList.<String>builder()
-        .addAll(blazeStartupFlags)
-        .add(name.toString())
-        .addAll(blazeCmdlineFlags)
+        .addAll(startupFlags())
+        .add(name().toString())
+        .addAll(cmdlineFlags())
         .build();
   }
 
   public ImmutableList<String> toList() {
     return ImmutableList.<String>builder()
-        .add(binaryPath)
-        .addAll(blazeStartupFlags)
-        .add(name.toString())
-        .addAll(blazeCmdlineFlags)
+        .add(binary().toString())
+        .addAll(startupFlags())
+        .add(name().toString())
+        .addAll(cmdlineFlags())
         .build();
   }
 
-  @Override
-  public String toString() {
-    return Joiner.on(' ').join(toList());
+  /**
+   * Creates a builder for a Bazel command. The binary path is resolved by {@link
+   * com.google.idea.blaze.base.buildview.BazelExecService} at execution time.
+   */
+  public static Builder builder(BlazeCommandName name) {
+    return new Builder(name);
   }
 
+  /**
+   * @deprecated Use {@link #builder(BlazeCommandName)} instead. Binary path is now resolved by
+   * BazelExecService at execution time.
+   */
+  @Deprecated
   public static Builder builder(BuildInvoker invoker, BlazeCommandName name) {
     return new Builder(invoker.getBinaryPath(), name);
   }
 
   /**
-   * @deprecated Use {@link #builder(BuildInvoker, BlazeCommandName)} instead.
+   * @deprecated Use {@link #builder(BlazeCommandName)} instead. Binary path is now resolved by
+   * BazelExecService at execution time.
    */
   @Deprecated
   public static Builder builder(String binaryPath, BlazeCommandName name) {
     return new Builder(binaryPath, name);
   }
 
-  /** Builder for a blaze command */
   public static class Builder {
-    private final String binaryPath;
+
+    private final Path binary;
     private final BlazeCommandName name;
-    private final ImmutableList.Builder<String> blazeStartupFlags = ImmutableList.builder();
+    private Path effectiveWorkspaceRoot;
+    private final ImmutableList.Builder<String> startupFlags = ImmutableList.builder();
     private final ImmutableList.Builder<TargetExpression> targets = ImmutableList.builder();
-    private final ImmutableList.Builder<String> blazeCmdlineFlags = ImmutableList.builder();
+    private final ImmutableList.Builder<String> cmdlineFlags = ImmutableList.builder();
     private final ImmutableList.Builder<String> exeFlags = ImmutableList.builder();
+    private final ImmutableMap.Builder<String, String> environment = ImmutableMap.builder();
+
+    /**
+     * Creates a builder without a binary path. The binary is resolved by BazelExecService at
+     * execution time.
+     */
+    Builder(BlazeCommandName name) {
+      this.binary = Path.of("bazel"); // placeholder, overridden by BazelExecService
+      this.name = name;
+      addBlazeFlags(BlazeFlags.getToolTagFlag());
+    }
 
     public Builder(String binaryPath, BlazeCommandName name) {
-      this.binaryPath = binaryPath;
+      this.binary = Path.of(binaryPath);
       this.name = name;
+
       // Tell forge what tool we used to call blaze so we can track usage.
       addBlazeFlags(BlazeFlags.getToolTagFlag());
     }
 
-    private ImmutableList<String> getArguments() {
+    public BlazeCommandName getName() {
+      return name;
+    }
+
+    public BlazeCommand build() {
       ImmutableList.Builder<String> arguments = ImmutableList.builder();
-      arguments.addAll(blazeCmdlineFlags.build());
+      arguments.addAll(cmdlineFlags.build());
 
       // Need to add '--' before targets, to support subtracted/excluded targets.
       arguments.add("--");
@@ -111,11 +137,15 @@ public final class BlazeCommand {
       }
 
       arguments.addAll(exeFlags.build());
-      return arguments.build();
-    }
 
-    public BlazeCommand build() {
-      return new BlazeCommand(binaryPath, name, blazeStartupFlags.build(), getArguments());
+      return new AutoValue_BlazeCommand(
+          binary,
+          name,
+          arguments.build(),
+          startupFlags.build(),
+          Optional.ofNullable(effectiveWorkspaceRoot),
+          environment.build()
+      );
     }
 
     @CanIgnoreReturnValue
@@ -147,7 +177,7 @@ public final class BlazeCommand {
 
     @CanIgnoreReturnValue
     public Builder addBlazeFlags(List<String> flags) {
-      this.blazeCmdlineFlags.addAll(flags);
+      this.cmdlineFlags.addAll(flags);
       return this;
     }
 
@@ -160,7 +190,26 @@ public final class BlazeCommand {
      */
     @CanIgnoreReturnValue
     public BlazeCommand.Builder addBlazeStartupFlags(List<String> flags) {
-      this.blazeStartupFlags.addAll(flags);
+      this.startupFlags.addAll(flags);
+      return this;
+    }
+
+    /** Sets the workspace root that the command should run in, overriding the project default. */
+    @CanIgnoreReturnValue
+    public BlazeCommand.Builder setWorkspaceRoot(Path root) {
+      this.effectiveWorkspaceRoot = root;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public BlazeCommand.Builder addEnvironmentVariable(String key, String value) {
+      this.environment.put(key, value);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public BlazeCommand.Builder addEnvironmentVariables(Map<String, String> values) {
+      this.environment.putAll(values);
       return this;
     }
   }

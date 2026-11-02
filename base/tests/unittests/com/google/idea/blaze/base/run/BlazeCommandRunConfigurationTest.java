@@ -25,6 +25,7 @@ import com.google.idea.blaze.base.model.primitives.Label;
 import com.google.idea.blaze.base.run.confighandler.BlazeCommandRunConfigurationHandlerProvider;
 import com.google.idea.blaze.base.run.targetfinder.TargetFinder;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
 import com.google.idea.blaze.base.settings.BuildSystemName;
 import com.google.idea.common.experiments.ExperimentService;
@@ -33,6 +34,7 @@ import com.intellij.openapi.extensions.impl.ExtensionPointImpl;
 import com.intellij.openapi.project.Project;
 import java.util.concurrent.Future;
 import org.jdom.Element;
+import org.jetbrains.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -41,7 +43,7 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class BlazeCommandRunConfigurationTest extends BlazeTestCase {
   private static final BlazeImportSettings DUMMY_IMPORT_SETTINGS =
-      new BlazeImportSettings("", "", "", "", BuildSystemName.Blaze);
+      new BlazeImportSettings("", "", "", "", BuildSystemName.Blaze, ProjectType.ASPECT_SYNC);
 
   private final BlazeCommandRunConfigurationType type = new BlazeCommandRunConfigurationType();
   private BlazeCommandRunConfiguration configuration;
@@ -98,8 +100,9 @@ public class BlazeCommandRunConfigurationTest extends BlazeTestCase {
 
   private static class MockTargetFinder implements TargetFinder {
     @Override
-    public Future<TargetInfo> findTarget(Project project, Label label) {
-      return Futures.immediateFuture(null);
+    @Nullable
+    public TargetInfo findTarget(Project project, Label label) {
+      return null;
     }
   }
 }

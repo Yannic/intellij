@@ -25,7 +25,6 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.google.idea.blaze.base.async.executor.ProgressiveTaskWithProgressIndicator;
 import com.google.idea.blaze.base.bazel.BuildSystem;
 import com.google.idea.blaze.base.bazel.BuildSystem.BuildInvoker;
-import com.google.idea.blaze.base.bazel.BuildSystem.SyncStrategy;
 import com.google.idea.blaze.base.command.BlazeInvocationContext;
 import com.google.idea.blaze.base.experiments.ExperimentScope;
 import com.google.idea.blaze.base.filecache.FileCaches;
@@ -53,7 +52,7 @@ import com.google.idea.blaze.base.sync.SyncScope.SyncCanceledException;
 import com.google.idea.blaze.base.sync.SyncScope.SyncFailedException;
 import com.google.idea.blaze.base.sync.aspects.BlazeBuildOutputs;
 import com.google.idea.blaze.base.sync.aspects.BlazeIdeInterface;
-import com.google.idea.blaze.base.sync.aspects.BuildResult;
+import com.google.idea.blaze.base.command.buildresult.BuildResult;
 import com.google.idea.blaze.base.sync.aspects.strategy.AspectStrategy.OutputGroup;
 import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
 import com.google.idea.blaze.base.sync.sharding.BlazeBuildTargetSharder;
@@ -61,10 +60,10 @@ import com.google.idea.blaze.base.sync.sharding.BlazeBuildTargetSharder.ShardedT
 import com.google.idea.blaze.base.toolwindow.Task;
 import com.google.idea.blaze.base.util.SaveUtil;
 import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.components.ServiceManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Key;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import javax.annotation.Nullable;
 
@@ -74,7 +73,7 @@ public class BlazeBuildService {
       Key.create("blaze.project.last.build.timestamp");
 
   public static BlazeBuildService getInstance(Project project) {
-    return ServiceManager.getService(project, BlazeBuildService.class);
+    return project.getService(BlazeBuildService.class);
   }
 
   public static Long getLastBuildTimeStamp(Project project) {
@@ -112,6 +111,33 @@ public class BlazeBuildService {
         buildSystem);
   }
 
+
+  public void buildFolder(String folderName,List<TargetExpression> targets) {
+    if (!Blaze.isBlazeProject(project)) {
+      return;
+    }
+    ProjectViewSet projectView = ProjectViewManager.getInstance(project).getProjectViewSet();
+    BlazeProjectData projectData =
+            BlazeProjectDataManager.getInstance(project).getBlazeProjectData();
+    if (projectView == null || projectData == null) {
+      return;
+    }
+
+    buildTargetExpressions(
+            project,
+            projectView,
+            projectData,
+            context -> targets,
+            new NotificationScope(
+                    project,
+                    "Make",
+                    "Make " + folderName + "/...:all",
+                    "Make" + folderName + "/...:all completed successfully",
+                    "Make" + folderName + "/...:all failed"),
+            "Make " + folderName + "/...:all",
+            buildSystem);
+  }
+
   public void buildProject() {
     if (!Blaze.isBlazeProject(project)) {
       return;
@@ -130,10 +156,10 @@ public class BlazeBuildService {
                     project,
                     context,
                     projectView,
-                    projectData.getWorkspacePathResolver(),
-                    projectData.getWorkspaceLanguageSettings())
+                    projectData.workspacePathResolver(),
+                    projectData.workspaceLanguageSettings())
                 .getTargetsToSync();
-          } catch (SyncCanceledException e) {
+          } catch (SyncCanceledException | ExecutionException | InterruptedException e) {
             context.setCancelled();
             return null;
           } catch (SyncFailedException e) {
@@ -209,18 +235,16 @@ public class BlazeBuildService {
                     SaveUtil.saveAllFiles();
                     BlazeBuildListener.EP_NAME.extensions().forEach(e -> e.buildStarting(project));
 
-                    BuildInvoker buildInvoker = buildSystem.getBuildInvoker(project, context);
+                    BuildInvoker buildInvoker = buildSystem.getBuildInvoker(project);
 
                     ShardedTargetsResult shardedTargets =
                         BlazeBuildTargetSharder.expandAndShardTargets(
                             project,
                             context,
-                            workspaceRoot,
                             projectView,
-                            projectData.getWorkspacePathResolver(),
+                            projectData.workspacePathResolver(),
                             targets,
-                            buildInvoker,
-                            SyncStrategy.SERIAL);
+                            buildInvoker);
                     if (shardedTargets.buildResult.status == BuildResult.Status.FATAL_ERROR) {
                       return null;
                     }
@@ -230,17 +254,18 @@ public class BlazeBuildService {
                                 project,
                                 context,
                                 workspaceRoot,
-                                projectData.getBlazeVersionData(),
+                                projectData.blazeVersionData(),
                                 buildInvoker,
                                 projectView,
                                 shardedTargets.shardedTargets,
-                                projectData.getWorkspaceLanguageSettings(),
+                                projectData.workspaceLanguageSettings(),
                                 ImmutableSet.of(OutputGroup.COMPILE),
-                                BlazeInvocationContext.OTHER_CONTEXT);
+                                BlazeInvocationContext.OTHER_CONTEXT,
+                                shardedTargets.shardedTargets.shardCount() > 1);
 
                     refreshFileCachesAndNotifyListeners(context, buildOutputs, project);
 
-                    if (buildOutputs.buildResult.status != BuildResult.Status.SUCCESS) {
+                    if (buildOutputs.buildResult().status != BuildResult.Status.SUCCESS) {
                       context.setHasError();
                     }
                     return null;
@@ -263,7 +288,7 @@ public class BlazeBuildService {
           public void onSuccess(@Nullable Void unused) {
             BlazeBuildListener.EP_NAME
                 .extensions()
-                .forEach(ep -> ep.buildCompleted(project, buildOutputs));
+                .forEach(ep -> ep.buildCompleted(project, buildOutputs.buildResult()));
           }
 
           @Override
@@ -272,9 +297,10 @@ public class BlazeBuildService {
             // print logs as required.
             BlazeBuildListener.EP_NAME
                 .extensions()
-                .forEach(ep -> ep.buildCompleted(project, buildOutputs));
+                .forEach(ep -> ep.buildCompleted(project, buildOutputs.buildResult()));
           }
         },
         MoreExecutors.directExecutor());
   }
 }
+

@@ -43,7 +43,7 @@ public abstract class BuildLookupElement extends LookupElement {
     this.wrapWithQuotes = quoteWrapping != QuoteType.NoQuotes;
   }
 
-  private static boolean insertClosingQuotes() {
+  protected static boolean insertClosingQuotes() {
     return CodeInsightSettings.getInstance().AUTOINSERT_PAIR_QUOTE;
   }
 
@@ -56,6 +56,10 @@ public abstract class BuildLookupElement extends LookupElement {
 
   @Nullable
   public abstract Icon getIcon();
+
+  public String getLabel() {
+    return baseName;
+  }
 
   protected String getItemText() {
     return baseName;

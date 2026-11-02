@@ -24,7 +24,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.startup.StartupActivity;
 
 /** Suppresses certain non-Blaze configuration producers in Blaze projects. */
-public class NonBlazeProducerSuppressor implements StartupActivity {
+public class NonBlazeProducerSuppressor implements StartupActivity.DumbAware {
 
   // PyTestsConfigurationProducer has internal visibility. We need to reference it to suppress it.
   @SuppressWarnings("KotlinInternal")
@@ -34,10 +34,7 @@ public class NonBlazeProducerSuppressor implements StartupActivity {
           com.jetbrains.python.testing.PyTestsConfigurationProducer.class,
           com.jetbrains.python.testing.PythonTestLegacyConfigurationProducer.class,
           com.jetbrains.python.testing.doctest.PythonDocTestConfigurationProducer.class,
-          com.jetbrains.python.testing.nosetestLegacy.PythonNoseTestConfigurationProducer.class,
-          com.jetbrains.python.testing.pytestLegacy.PyTestConfigurationProducer.class,
-          com.jetbrains.python.testing.tox.PyToxConfigurationProducer.class,
-          com.jetbrains.python.testing.unittestLegacy.PythonUnitTestConfigurationProducer.class);
+          com.jetbrains.python.testing.tox.PyToxConfigurationProducer.class);
 
   @Override
   public void runActivity(Project project) {

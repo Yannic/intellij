@@ -26,6 +26,7 @@ import java.nio.file.Path;
 import javax.annotation.Nullable;
 
 /** Represents a workspace root */
+@SuppressWarnings("FileComparisons")
 public class WorkspaceRoot implements ProtoWrapper<String> {
   private final File directory;
 
@@ -46,12 +47,17 @@ public class WorkspaceRoot implements ProtoWrapper<String> {
   /**
    * Tries to load the import settings for the given project and get the workspace root directory.
    * <br>
-   * Unlike {@link #fromProject}, it will silently return null if this is not a blaze project.
+   * Unlike {@link #fromProject}, it will silently return null if this is not a blaze project of if
+   * the project is not properly initialized (eg. in tests).
    */
   @Nullable
   public static WorkspaceRoot fromProjectSafe(Project project) {
-    BlazeImportSettings importSettings =
-        BlazeImportSettingsManager.getInstance(project).getImportSettings();
+    BlazeImportSettingsManager manager = BlazeImportSettingsManager.getInstance(project);
+    if (manager == null) {
+      return null;
+    }
+
+    BlazeImportSettings importSettings = manager.getImportSettings();
     return importSettings != null ? fromImportSettings(importSettings) : null;
   }
 
@@ -89,6 +95,22 @@ public class WorkspaceRoot implements ProtoWrapper<String> {
 
   public WorkspacePath workspacePathFor(VirtualFile file) {
     return workspacePathFor(file.getPath());
+  }
+
+  public Path relativize(VirtualFile file) {
+    return workspacePathFor(file).asPath();
+  }
+
+  public Path relativize(Path path) {
+    return workspacePathFor(path.toString()).asPath();
+  }
+
+  public @Nullable Path tryRelativize(VirtualFile file) {
+    if (!isInWorkspace(file)) {
+      return null;
+    }
+
+    return relativize(file);
   }
 
   private WorkspacePath workspacePathFor(String path) {

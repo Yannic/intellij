@@ -35,6 +35,42 @@ if [[ -r ~/.gdbserver_wrapper_options ]]; then
   source ~/.gdbserver_wrapper_options
 fi
 
+gdbserver_wrapper::version_lt() {
+  # compare versions like 9.1 < 10.1 using sort -V
+  [[ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" != "$2" ]]
+}
+
+gdbserver_wrapper::detect_version() {
+  # try running `gdbserver --version`, then grep the first X or X.Y occurrence
+  if ver="$("$1" --version 2>/dev/null | grep -Eo '[0-9]+(\.[0-9]+)?' | head -n1)"; then
+    if [[ -n "$ver" ]]; then
+      echo "$ver"
+      return 0
+    fi
+  fi
+
+  # fallback to "0.0" if detection fails (to be conservative and enable escaping)
+  echo "0.0"
+  return 0
+}
+
+gdbserver_wrapper::check_network_access() {
+  # Bazel sandboxing can disable network access. If there is no network access,
+  # the gdbserver will not be able to communicate with the IDE outside the sandbox.
+  # We check this by verifying if the loopback interface 'lo' is the only interface
+  # present in /sys/class/net, which indicates an isolated network namespace.
+  local active_interfaces
+  if [[ -d /sys/class/net ]]; then
+    active_interfaces="$(ls /sys/class/net 2>/dev/null)"
+    if [[ "${active_interfaces}" == "lo" ]] || [[ -z "${active_interfaces}" ]]; then
+      echo >&2 "error: gdbserver_wrapper: No network access detected in sandbox."
+      echo >&2 "The IDE debugger cannot connect to a gdbserver inside a network-isolated sandbox."
+      echo >&2 "Please ensure network is allowed (e.g., by omitting --nosandbox_default_allow_network)."
+      exit 1
+    fi
+  fi
+}
+
 gdbserver_wrapper::setup() {
   # create work directory for all temporary files
   work_directory="$(mktemp --tmpdir --directory "gdbserver_wrapper.XXXXXXXX")"
@@ -49,15 +85,29 @@ gdbserver_wrapper::setup() {
   gdbserver_stdout="${work_directory}/gdbserver.out"
   inferior_stderr="${work_directory}/inferior.err"
   inferior_stdout="${work_directory}/inferior.out"
+  redirection_wrapper="${work_directory}/redirection_wrapper.sh"
+}
+
+gdbserver_wrapper::setup_redirection_wrapper() {
+  {
+    # The shebang ensures that an extra exec happens which is necessary for gdb's internal pending_execs to be accurate
+    echo "#!/bin/bash"
+    echo "exec \"\$@\" 1>${inferior_stdout} 2>${inferior_stderr}"
+  } >> "${redirection_wrapper}"
+
+  chmod +x "${redirection_wrapper}"
 }
 
 gdbserver_wrapper::parse_args() {
   local inferior
   inferior=0
   for old_arg in "${original_args[@]}"; do
-    # first arg is path to gdbserver, but inject extra args after it
-    if [[ ${#new_args[@]} -eq 1 && -n "${GDBSERVER_WRAPPER_EXTRA_ARGS}" ]]; then
-      new_args+=(${GDBSERVER_WRAPPER_EXTRA_ARGS})
+    # first arg is path to gdbserver so inject redirection wrapper and possible extra args after that
+    if [[ ${#new_args[@]} -eq 1 ]]; then
+      new_args+=("--wrapper" "${redirection_wrapper}" "--")
+      if [[ -n "${GDBSERVER_WRAPPER_EXTRA_ARGS}" ]]; then
+        new_args+=("${GDBSERVER_WRAPPER_EXTRA_ARGS}")
+      fi
     fi
     if [[ $inferior -eq 0 ]]; then
       if [[ "${old_arg}" == "--keep_work_directory" ]]; then
@@ -75,13 +125,15 @@ gdbserver_wrapper::parse_args() {
       fi
     elif [[ $inferior -eq 1 ]]; then
       new_args+=("${old_arg}")
-      new_args+=("1>${inferior_stdout}")
-      new_args+=("2>${inferior_stderr}")
       # the rest are params for inferior
       inferior=2
     else
-      # do shell escaping via printf '%q'
-      new_args+=("$(printf "%q" "${old_arg}")")
+      # for inferior args, optionally shell-escape them for older gdbserver versions
+      if [[ "${need_shell_escaping}" -eq 1 ]]; then
+        new_args+=("$(printf "%q" "${old_arg}")")
+      else
+        new_args+=("${old_arg}")
+      fi
     fi
   done
 }
@@ -146,13 +198,30 @@ gdbserver_wrapper::main() {
   local original_args new_args work_directory
   local gdbserver_stderr gdbserver_stdout
   local inferior_stderr inferior_stdout
+  local redirection_wrapper
   local keep_work_directory verbose
+  local gdbserver_version need_shell_escaping
+
   keep_work_directory="${GDBSERVER_WRAPPER_KEEP_WORK_DIRECTORY}"
   verbose="${GDB_WRAPPER_VERBOSE}"
 
   original_args=("$@")
 
+  gdbserver_wrapper::check_network_access
+
+  # detect version from the first arg (gdbserver binary)
+  gdbserver_version="$(gdbserver_wrapper::detect_version "${original_args[0]}")"
+
+  # enable shell escaping for gdbserver versions older than 10.1
+  if gdbserver_wrapper::version_lt "${gdbserver_version}" "10.1"; then
+    need_shell_escaping=1
+  else
+    need_shell_escaping=0
+  fi
+
   gdbserver_wrapper::setup
+
+  gdbserver_wrapper::setup_redirection_wrapper
 
   gdbserver_wrapper::parse_args
 

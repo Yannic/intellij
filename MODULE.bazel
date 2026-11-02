@@ -1,0 +1,209 @@
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_java", version = "9.9.0")
+bazel_dep(name = "rules_python", version = "2.3.4")
+bazel_dep(name = "rules_proto", version = "7.1.0")
+bazel_dep(name = "protobuf", version = "36.2")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
+bazel_dep(name = "rules_pkg", version = "1.3.0")
+bazel_dep(name = "rules_jvm_external", version = "7.2")
+bazel_dep(name = "rules_kotlin", version = "2.4.20")
+
+register_toolchains("//third_party/kotlin:toolchain")
+
+# required for aspect tests
+bazel_dep(name = "rules_shell", version = "0.8.0")
+bazel_dep(name = "rules_cc", version = "0.2.22")
+bazel_dep(name = "abseil-cpp", version = "20250814.2")
+
+# dependency on the new aspect's sdk
+bazel_dep(name = "intellij_aspect_sdk")
+git_override(
+    module_name = "intellij_aspect_sdk",
+    commit = "c1ee5028efdc090f1265006641836aeee376815e",
+    remote = "https://github.com/JetBrains/intellij-aspect.git",
+)
+
+# import clwb test projects for aspect tests
+local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
+
+local_repository(
+    name = "clwb_virtual_includes_project",
+    path = "clwb/tests/projects/virtual_includes",
+)
+
+local_repository(
+    name = "clwb_virtual_includes_external",
+    path = "clwb/tests/projects/virtual_includes/lib/external",
+)
+
+# custom rules_bazel_integration_test version, patches are required until we write our own version of these rules :c
+bazel_dep(name = "rules_bazel_integration_test", version = "0.37.1")
+single_version_override(
+    module_name = "rules_bazel_integration_test",
+    patch_strip = 1,
+    patches = ["//third_party/bazel/patches:rules_bazel_integration_test.patch"],
+)
+
+# configure python cor rules_python
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    configure_coverage_tool = True,
+    python_version = "3.12",
+)
+use_repo(python, "python_3_12", "python_versions")
+
+# configure bazel binaries for rules_bazel_integration_test
+bazel_binaries = use_extension("@rules_bazel_integration_test//:extensions.bzl", "bazel_binaries")
+bazel_binaries.download(version = "7.7.1")
+bazel_binaries.download(version = "8.7.0")
+bazel_binaries.download(version = "9.2.0")
+bazel_binaries.download(version = "last_green")
+use_repo(
+    bazel_binaries,
+    "bazel_binaries",
+    "bazel_binaries_bazelisk",
+    "build_bazel_bazel_7_7_1",
+    "build_bazel_bazel_8_7_0",
+    "build_bazel_bazel_9_2_0",
+    "build_bazel_bazel_last_green",
+)
+
+# configure maven for rules_java_external
+maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
+maven.install(
+    name = "maven",
+    artifacts = [
+        "junit:junit:4.13.2",
+        "org.opentest4j:opentest4j:1.3.0",
+        "org.mockito:mockito-core:5.24.0",
+        "org.objenesis:objenesis:3.6",
+        "net.bytebuddy:byte-buddy:1.18.16-jdk5",
+        "net.bytebuddy:byte-buddy-agent:1.18.16-jdk5",
+        "com.google.flogger:flogger:0.9",
+        "com.google.flogger:flogger-system-backend:0.9",
+        "com.googlecode.java-diff-utils:diffutils:1.3.0",
+        # Usually, we'd get this from the JetBrains SDK, but the bundled one not aware of Bazel platforms,
+        # so it fails on certain setups.
+        "net.java.dev.jna:jna:5.19.1",
+        "net.java.dev.jna:jna-platform:5.19.1",
+        "com.google.auto.value:auto-value-annotations:1.11.1",
+        "com.google.auto.value:auto-value:1.11.1",
+        "com.google.code.findbugs:jsr305:3.0.2",
+        "com.google.code.gson:gson:2.14.0",
+        "com.google.errorprone:error_prone_annotations:2.51.0",
+        "com.google.guava:guava:33.7.2-jre",  # changed to jre
+        "com.google.truth:truth:1.4.5",
+        "com.google.j2objc:j2objc-annotations:3.1",
+        "com.google.guava:failureaccess:1.0.3",
+        "org.hamcrest:hamcrest-core:3.0",
+        "org.jetbrains:annotations:26.1.0",
+        "org.jetbrains.pty4j:pty4j:0.14.0",
+        "org.opentest4j:opentest4j:1.3.0",
+        # Only required for the maintenance script, otherwise use the stdlib for the sdk
+        "org.jetbrains.kotlin:kotlin-stdlib:2.2.21",
+        "org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0",
+    ],
+    fail_if_repin_required = True,
+    generate_compat_repositories = True,
+    known_contributing_modules = [
+        "",
+        "bazel_worker_java",
+        "protobuf",
+    ],
+    lock_file = "//:maven_install.json",
+    repositories = [
+        "https://cache-redirector.jetbrains.com/maven-central",
+        "https://cache-redirector.jetbrains.com/intellij-dependencies",
+    ],
+)
+use_repo(
+    maven,
+    "com_google_guava_failureaccess",
+    "com_google_guava_guava",
+    "com_google_j2objc_j2objc_annotations",
+    "maven",
+    "org_opentest4j_opentest4j",
+    "unpinned_maven",
+    auto_value = "com_google_auto_value_auto_value",
+    auto_value_annotations = "com_google_auto_value_auto_value_annotations",
+    bytebuddy = "net_bytebuddy_byte_buddy",
+    bytebuddy_agent = "net_bytebuddy_byte_buddy_agent",  # Can it be `bytebuddy-agent`? (not a legal identifier)
+    diffutils = "com_googlecode_java_diff_utils_diffutils",
+    error_prone_annotations = "com_google_errorprone_error_prone_annotations",
+    flogger = "com_google_flogger_flogger",
+    flogger_system_backend = "com_google_flogger_flogger_system_backend",
+    gson = "com_google_code_gson_gson",
+    hamcrest = "org_hamcrest_hamcrest_core",
+    jetbrains_annotations = "org_jetbrains_annotations",
+    jna = "net_java_dev_jna_jna",
+    jsr305_annotations = "com_google_code_findbugs_jsr305",
+    junit = "junit_junit",
+    mockito = "org_mockito_mockito_core",
+    objenesis = "org_objenesis_objenesis",
+    ptylib = "org_jetbrains_pty4j_pty4j",
+    truth = "com_google_truth_truth",
+)
+
+# install all required intellij sdks and plugins
+intellij_platform = use_extension("//intellij_platform_sdk:extension.bzl", "intellij_platform")
+intellij_platform.jbr(
+    major = "25.0.3",
+    minor = "b508.4",
+    sha256 = {
+        "osx-aarch64": "5eec8b014c9e0503ab4b9c60f7890f136752fe765375042a189dd81c297ee7ee",
+        "linux-x64": "b41b8f9451ca76b0bb32270266f8f0e7437bf97a9737be84d46bd0cdfa01b3dd",
+        "windows-x64": "b5d07556d36fa84239e35b5458ce31e7f6e2b8088d6423ddbf29c19ebd8812b4",
+    },
+)
+intellij_platform.sdk(
+    name = "clion",
+    build_file = "//intellij_platform_sdk:BUILD.clion262",
+    sha256 = "1798f3fd8c85ad074f1e6d46cb0fa820507dd289b82e8030ae42475185944266",
+    version = "2026.2.4",
+)
+intellij_platform.sdk(
+    name = "clion",
+    alias = "clion_2026_3",
+    build_file = "//intellij_platform_sdk:BUILD.clion263",
+    sha256 = "7193c2d4659d06c405b92b5d5a93006feb272032b227839df5a3f46fcdd1ff73",
+    version = "263.7307.35-EAP-SNAPSHOT",
+)
+intellij_platform.plugin(
+    name = "PythonCore",
+    alias = "python_2026_2",
+    build_file = "//intellij_platform_sdk:BUILD.python",
+    sha256 = "a56710797a2f7ab4147e1d81a1f3c494f32b891827ddfcad2977e3000431a03f",
+    version = "262.10968.63",
+)
+intellij_platform.plugin(
+    name = "PythonCore",
+    alias = "python_2026_3",
+    build_file = "//intellij_platform_sdk:BUILD.python",
+    sha256 = "8e4669a6cab003fd5408390f42cd8f717d100b7883d05b71a38860e55d87e402",
+    version = "263.7307.44",
+)
+use_repo(intellij_platform, "clion_2026_2", "clion_2026_3", "jbr_25_0_3", "python_2026_2", "python_2026_3")
+
+register_toolchains(
+    "@clion_2026_2//:runtime",
+    "@clion_2026_2//:bootstrap_runtime",
+    "@clion_2026_3//:runtime",
+    "@clion_2026_3//:bootstrap_runtime",
+)
+
+# build tools deploy jars for the tools required by the plugin
+bazel_build_jars = use_repo_rule("//third_party/bazel/jars:extension.bzl", "bazel_build_jars")
+
+bazel_build_jars(
+    name = "bazel_jars",
+    jars = [
+        "//src/tools/execlog:parser_deploy.jar",
+        "//src/main/java/net/starlark/java/cmd:starlark_deploy.jar",
+    ],
+    patches = [
+        "//third_party/bazel/jars:starlark_repl.patch",
+        "//third_party/bazel/jars:execlog_parser.patch",
+    ],
+    sha256 = "fd2382f6a84fc00df819b9e26c5435bf38338362c43b7e0834dbfc38cb8f850e",
+    tag = "9.2.0",
+)

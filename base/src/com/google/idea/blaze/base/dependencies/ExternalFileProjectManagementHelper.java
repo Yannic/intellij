@@ -26,13 +26,16 @@ import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.primitives.LanguageClass;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
 import com.google.idea.blaze.base.scope.BlazeContext;
+import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeUserSettings;
 import com.google.idea.blaze.base.settings.ui.BlazeUserSettingsCompositeConfigurable;
 import com.google.idea.blaze.base.settings.ui.BlazeUserSettingsConfigurable;
 import com.google.idea.blaze.base.sync.SyncListener;
 import com.google.idea.blaze.base.sync.SyncMode;
 import com.google.idea.blaze.base.sync.SyncResult;
+import com.google.idea.blaze.base.sync.data.BlazeDataStorage;
 import com.google.idea.blaze.base.sync.projectview.LanguageSupport;
 import com.google.idea.common.experiments.BoolExperiment;
 import com.intellij.ide.actions.ShowSettingsUtilImpl;
@@ -48,11 +51,14 @@ import com.intellij.openapi.util.io.FileUtilRt;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.EditorNotificationPanel;
 import com.intellij.ui.EditorNotifications;
+
 import java.io.File;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.function.Consumer;
 import javax.annotation.Nullable;
 
 /**
@@ -68,7 +74,7 @@ public class ExternalFileProjectManagementHelper
 
   private static final Key<EditorNotificationPanel> KEY = Key.create("add.source.to.project");
 
-  private final Set<File> suppressedFiles = new HashSet<>();
+  private final Set<VirtualFile> suppressedFiles = new HashSet<>();
 
   private static final ImmutableList<String> IGNORED_FILE_TYPE_NAMES =
       ImmutableList.of(
@@ -79,6 +85,8 @@ public class ExternalFileProjectManagementHelper
           BuildFileType.INSTANCE.getName());
 
   private final Project project;
+
+  private static final String addFilePanelTitle = "Do you want to add this file to your project sources?";
 
   public ExternalFileProjectManagementHelper(Project project) {
     this.project = project;
@@ -92,7 +100,7 @@ public class ExternalFileProjectManagementHelper
   /** Whether the editor notification should be shown for this file type. */
   private static boolean supportedFileType(File file) {
     LanguageClass language =
-        LanguageClass.fromExtension(FileUtilRt.getExtension(file.getName()).toLowerCase());
+        LanguageClass.fromExtension(FileUtilRt.getExtension(file.getName()).toLowerCase(Locale.ROOT));
     if (language != null && !LanguageSupport.languagesSupportedByCurrentIde().contains(language)) {
       return false;
     }
@@ -107,52 +115,117 @@ public class ExternalFileProjectManagementHelper
   @Nullable
   @Override
   public EditorNotificationPanel createNotificationPanel(VirtualFile vf, FileEditor fileEditor) {
+    if (Blaze.getProjectType(project).equals(BlazeImportSettings.ProjectType.UNKNOWN)) {
+      return null;
+    }
+
     if (!enabled.getValue()) {
       return null;
     }
     if (!BlazeUserSettings.getInstance().getShowAddFileToProjectNotification()
-        || suppressedFiles.contains(new File(vf.getPath()))) {
+        || suppressedFiles.contains(vf)) {
       return null;
     }
     File file = new File(vf.getPath());
     if (!supportedFileType(file)) {
       return null;
     }
+    return createNotificationPanelByProjectType(vf);
+  }
+
+  @Nullable
+  private EditorNotificationPanel createNotificationPanelByProjectType(VirtualFile vf) {
+    ProjectType projectType = Blaze.getProjectType(project);
+    switch (projectType) {
+      case ASPECT_SYNC:
+        return createNotificationPanelForLegacySync(vf);
+      case UNKNOWN:
+        return null;
+    }
+    throw new AssertionError(projectType);
+  }
+
+  @Nullable
+  public EditorNotificationPanel createNotificationPanelForLegacySync(VirtualFile vf) {
+
     LocationContext context = AddSourceToProjectHelper.getContext(project, vf);
     if (context == null) {
       return null;
     }
     boolean inProjectDirectories = AddSourceToProjectHelper.sourceInProjectDirectories(context);
     boolean alreadyBuilt = AddSourceToProjectHelper.sourceCoveredByProjectViewTargets(context);
-    if (alreadyBuilt && inProjectDirectories) {
+    // We do not want to add `/.ijwb` (neither `.clwb` or `.aswb`) to the project view since it has no BUILD files
+    // This helps to avoid `ERROR: Skipping '//.ijwb/...:all': no targets found beneath '.ijwb'`
+    boolean inProjectDataDir =
+            BlazeDataStorage.ALL_PROJECT_SUBDIRECTORIES.values()
+                    .stream()
+                    .anyMatch(dataDirName -> context.file.getPath().contains(String.format("/%s/", dataDirName)));
+    if (inProjectDataDir || (alreadyBuilt && inProjectDirectories)) {
       return null;
     }
 
-    boolean addTargets = !alreadyBuilt && !AddSourceToProjectHelper.autoDeriveTargets(project);
-    ListenableFuture<List<TargetInfo>> targetsFuture =
-        addTargets
-            ? AddSourceToProjectHelper.getTargetsBuildingSource(context)
-            : Futures.immediateFuture(ImmutableList.of());
-    if (targetsFuture == null) {
-      return null;
-    }
+    if(!AddSourceToProjectHelper.autoDeriveTargets(project)) {
+      boolean addTargets = !alreadyBuilt && !AddSourceToProjectHelper.autoDeriveTargets(project);
+      ListenableFuture<List<TargetInfo>> targetsFuture =
+              addTargets
+                      ? AddSourceToProjectHelper.getTargetsBuildingSource(context)
+                      : Futures.immediateFuture(ImmutableList.of());
+      if (targetsFuture == null) {
+        return null;
+      }
+      EditorNotificationPanel panel =
+              createPanel(
+                      vf,
+                      p ->
+                              p.createActionLabel(
+                                      "Add file to project",
+                                      () -> {
+                                        AddSourceToProjectHelper.addSourceToProject(
+                                                project, context.workspacePath, inProjectDirectories, targetsFuture);
+                                        EditorNotifications.getInstance(project).updateNotifications(vf);
+                                      }), addFilePanelTitle);
+      panel.setVisible(false); // starts off not visible until we get the query results
 
+      targetsFuture.addListener(
+              () -> {
+                try {
+                  List<TargetInfo> targets = targetsFuture.get();
+                  if (!targets.isEmpty() || !inProjectDirectories) {
+                    panel.setVisible(true);
+                  }
+                } catch (InterruptedException | ExecutionException e) {
+                  // ignore
+                }
+              },
+              MoreExecutors.directExecutor());
+      return panel;
+    } else if (!inProjectDirectories) {
+      EditorNotificationPanel panel =
+          createPanel(
+              vf,
+              p ->
+                  p.createActionLabel(
+                      "Add package to project",
+                      () -> {
+                        AddSourceToProjectHelper.addDirectoryAndDerivedTargetsToProject(
+                            project, context.workspacePath);
+                        EditorNotifications.getInstance(project).updateNotifications(vf);
+                      }), "Do you want to add this package to your project sources?");
+      return panel;
+    } else return null;
+  }
+
+  private EditorNotificationPanel createPanel(
+          VirtualFile virtualFile, Consumer<EditorNotificationPanel> mainActionAdder, String title) {
     EditorNotificationPanel panel = new EditorNotificationPanel();
-    panel.setVisible(false); // starts off not visible until we get the query results
-    panel.setText("Do you want to add this file to your project sources?");
-    panel.createActionLabel(
-        "Add file to project",
-        () -> {
-          AddSourceToProjectHelper.addSourceToProject(
-              project, context.workspacePath, inProjectDirectories, targetsFuture);
-          EditorNotifications.getInstance(project).updateNotifications(vf);
-        });
+    panel.setText(title);
+    mainActionAdder.accept(panel);
     panel.createActionLabel(
         "Hide notification",
         () -> {
           // suppressed for this file until the editor is restarted
-          suppressedFiles.add(file);
-          EditorNotifications.getInstance(project).updateNotifications(vf);
+          suppressedFiles.add(virtualFile);
+          EditorNotifications.getInstance(project).updateNotifications(virtualFile);
         });
     panel.createActionLabel(
         "Don't show again",
@@ -165,20 +238,6 @@ public class ExternalFileProjectManagementHelper
               BlazeUserSettingsCompositeConfigurable.ID,
               BlazeUserSettingsConfigurable.SHOW_ADD_FILE_TO_PROJECT.label());
         });
-
-    targetsFuture.addListener(
-        () -> {
-          try {
-            List<TargetInfo> targets = targetsFuture.get();
-            if (!targets.isEmpty() || !inProjectDirectories) {
-              panel.setVisible(true);
-            }
-          } catch (InterruptedException | ExecutionException e) {
-            // ignore
-          }
-        },
-        MoreExecutors.directExecutor());
-
     return panel;
   }
 

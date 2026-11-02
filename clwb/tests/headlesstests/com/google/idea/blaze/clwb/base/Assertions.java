@@ -1,0 +1,184 @@
+/*
+ * Copyright 2026 The Bazel Authors. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.google.idea.blaze.clwb.base;
+
+import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
+import static com.google.idea.blaze.clwb.base.Utils.resolveHeader;
+import static com.google.idea.testing.headless.Assertions.abort;
+
+import com.google.common.truth.StringSubject;
+import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
+import com.google.idea.blaze.base.util.VfsUtil;
+import com.google.idea.blaze.cpp.sync.HeaderCacheService;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.Ref;
+import com.intellij.openapi.util.text.StringUtil;
+import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.util.system.OS;
+import com.jetbrains.cidr.lang.toolchains.CidrCompilerSwitches.Format;
+import com.jetbrains.cidr.lang.workspace.OCCompilerSettings;
+import com.jetbrains.cidr.lang.workspace.headerRoots.HeadersSearchRoot;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+public class Assertions {
+
+  private final static String ASPECT_FILE_EXTENSION = ".intellij-info.txt";
+  private final static Pattern DEFINE_RX = Pattern.compile("#define ([^ ]+) ?(.*)");
+
+  public static void assertContainsHeader(String fileName, OCCompilerSettings settings) {
+    assertContainsHeader(fileName, true, settings);
+  }
+
+  public static void assertDoesntContainHeader(String fileName, OCCompilerSettings settings) {
+    assertContainsHeader(fileName, false, settings);
+  }
+
+  private static void assertContainsHeader(String fileName, boolean shouldContain, OCCompilerSettings settings) {
+    final var roots = settings.getHeadersSearchRoots().getAllRoots();
+    assertThat(roots).isNotEmpty();
+
+    final var found = new Ref<VirtualFile>();
+    final var foundIn = new Ref<HeadersSearchRoot>();
+
+    for (final var root : roots) {
+      final var rootFile = root.getVirtualFile();
+      if (rootFile == null) {
+        continue;
+      }
+
+      final var headerFile = rootFile.findFileByRelativePath(fileName);
+      if (headerFile == null || !headerFile.exists()) {
+        continue;
+      }
+
+      found.set(headerFile);
+      foundIn.set(root);
+
+      break;
+    }
+
+    if (shouldContain) {
+      assertWithMessage(String.format("%s not found in:\n%s", fileName, StringUtil.join(roots, "\n")))
+          .that(found.isNull())
+          .isFalse();
+    } else {
+      assertWithMessage(String.format("%s found in: %s", fileName, foundIn.get()))
+          .that(found.isNull())
+          .isTrue();
+    }
+  }
+
+  public static StringSubject assertDefine(String symbol, OCCompilerSettings settings) {
+    final var defines = settings.getPreprocessorDefines();
+    assertThat(defines).isNotEmpty();
+
+    for (final var define : defines) {
+      final var matcher = DEFINE_RX.matcher(define);
+      if (!matcher.find()) {
+        continue;
+      }
+
+      final var defineSymbol = matcher.group(1);
+      if (defineSymbol == null || !defineSymbol.equals(symbol)) {
+        continue;
+      }
+
+      final var defineValue = matcher.group(2);
+      return assertWithMessage(define).that(defineValue);
+    }
+
+    return assertWithMessage("symbol is not defined: " + symbol).that((String) null);
+  }
+
+  public static void assertContainsPattern(String regex, List<String> list) {
+    final var pattern = Pattern.compile(regex);
+    final var message = String.format("%s not found in:\n%s", regex, StringUtil.join(list, "\n"));
+    final var match = list.stream().anyMatch(it -> pattern.matcher(it).matches());
+
+    assertWithMessage(message).that(match).isTrue();
+  }
+
+  public static void assertContainsCompilerFlag(String flag, OCCompilerSettings settings) {
+    final var switches = settings.getCompilerSwitches();
+    assertThat(switches).isNotNull();
+
+    final var list = switches.getList(Format.BASH_SHELL);
+    assertThat(list).contains(flag);
+  }
+
+  public static void assertNotContainsCompilerFlag(String flag, OCCompilerSettings settings) {
+    final var switches = settings.getCompilerSwitches();
+    assertThat(switches).isNotNull();
+
+    final var list = switches.getList(Format.BASH_SHELL);
+    assertThat(list).doesNotContain(flag);
+  }
+
+  public static void assertVfsLoads(Path executionRoot, List<AllowedVfsRoot> allowedRoots) {
+    final var childrenInVfs = VfsUtil.getVfsChildrenAsList(executionRoot);
+
+    loop: for (final var child : childrenInVfs) {
+      final var relativeChild = executionRoot.relativize(child);
+
+      // files from external repositories are always allowed
+      if (relativeChild.startsWith("external")) continue;
+
+      for (final var allowedRoot : allowedRoots) {
+        if (allowedRoot.contains(relativeChild)) continue loop;
+      }
+
+      final var roots = allowedRoots.stream().map(Object::toString).collect(Collectors.joining(";"));
+      abort(String.format("%s not in allowed roots: [%s], debug with: '-Dfile.system.trace.loading=%s'", child, roots, child));
+    }
+  }
+
+  public static void assertCachedHeader(String fileName, OCCompilerSettings settings, Project project, boolean symlink) {
+    final var header = resolveHeader(fileName, settings);
+    assertThat(header).isNotNull();
+
+    final var service = HeaderCacheService.of(project);
+    assertThat(HeaderCacheService.getEnabled()).isTrue();
+
+    assertWithMessage(String.format("file does not reside in the include cache: %s", header.getPath()))
+        .that(header.toNioPath().startsWith(service.getCacheDirectory()))
+        .isTrue();
+
+    // symlinks do not work on Windows CI runners
+    if (!OS.CURRENT.equals(OS.Windows)) {
+      assertWithMessage("Symlink status of cached file '%s' did not match expectation.", header.toNioPath())
+          .that(Files.isSymbolicLink(header.toNioPath()))
+          .isEqualTo(symlink);
+    }
+  }
+
+  public static void assertWorkspaceHeader(String fileName, OCCompilerSettings compilerSettings, Project project) {
+    final var header = resolveHeader(fileName, compilerSettings);
+    assertThat(header).isNotNull();
+
+    final var importSettings = BlazeImportSettingsManager.getInstance(project).getImportSettings();
+    assertThat(importSettings).isNotNull();
+
+    assertWithMessage(String.format("file does not reside in the workspace: %s", header.getPath()))
+        .that(header.toNioPath().startsWith(importSettings.getWorkspaceRoot()))
+        .isTrue();
+  }
+}

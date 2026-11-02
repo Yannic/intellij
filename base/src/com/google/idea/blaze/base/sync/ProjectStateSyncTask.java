@@ -17,17 +17,24 @@ package com.google.idea.blaze.base.sync;
 
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.idea.blaze.base.async.FutureUtil;
+import com.google.idea.blaze.base.async.FutureUtil.FutureResult;
 import com.google.idea.blaze.base.async.executor.BlazeExecutor;
+import com.google.idea.blaze.base.bazel.BazelBinaryUtil;
 import com.google.idea.blaze.base.command.BlazeCommandName;
 import com.google.idea.blaze.base.command.BlazeFlags;
 import com.google.idea.blaze.base.command.BlazeInvocationContext;
 import com.google.idea.blaze.base.command.info.BlazeInfo;
+import com.google.idea.blaze.base.command.info.BlazeInfoProvider;
 import com.google.idea.blaze.base.command.info.BlazeInfoRunner;
+import com.google.idea.blaze.base.model.ExternalWorkspaceDataProvider;
+import com.google.idea.blaze.base.execution.ExecutionDeniedException;
 import com.google.idea.blaze.base.io.FileOperationProvider;
 import com.google.idea.blaze.base.model.BlazeVersionData;
+import com.google.idea.blaze.base.model.ExternalWorkspaceData;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.plugin.BuildSystemVersionChecker;
 import com.google.idea.blaze.base.projectview.ProjectViewManager;
@@ -42,6 +49,8 @@ import com.google.idea.blaze.base.scope.scopes.TimingScope.EventType;
 import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
+import com.google.idea.blaze.base.settings.ui.BlazeUserSettingsCompositeConfigurable;
+import com.google.idea.blaze.base.settings.ui.BlazeUserSettingsConfigurable;
 import com.google.idea.blaze.base.sync.SyncScope.SyncCanceledException;
 import com.google.idea.blaze.base.sync.SyncScope.SyncFailedException;
 import com.google.idea.blaze.base.sync.projectview.LanguageSupport;
@@ -49,21 +58,60 @@ import com.google.idea.blaze.base.sync.projectview.WorkspaceLanguageSettings;
 import com.google.idea.blaze.base.sync.workspace.WorkingSet;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolver;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolverImpl;
-import com.google.idea.blaze.base.vcs.BlazeVcsHandler;
+import com.google.idea.blaze.base.vcs.BlazeVcsHandlerProvider;
+import com.google.idea.blaze.base.vcs.BlazeVcsHandlerProvider.BlazeVcsHandler;
+import com.google.idea.blaze.base.vcs.BlazeVcsHandlerProvider.BlazeVcsSyncHandler;
+import com.google.idea.blaze.base.vcs.BlazeVcsHandlerProvider.BlazeVcsSyncHandler.ValidationResult;
 import com.google.idea.blaze.common.PrintOutput;
+import com.google.idea.blaze.exception.BuildException;
+import com.intellij.build.issue.BuildIssueQuickFix;
+import com.intellij.ide.actions.ShowSettingsUtilImpl;
+import com.intellij.ide.util.PropertiesComponent;
+import com.intellij.openapi.actionSystem.DataContext;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
+import org.jetbrains.annotations.NotNull;
+
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
-/** Collects information about the project state (VCS, blaze info, .blazeproject contents, etc.). */
+/**
+ * Collects information about the project state (VCS, blaze info, .blazeproject contents, etc.).
+ */
 final class ProjectStateSyncTask {
 
-  static SyncProjectState collectProjectState(Project project, BlazeContext context)
+  /** Persisted property which permanently disables {@link #verifyBazelBinary}. */
+  private static final String SKIP_BINARY_VALIDATION_KEY = "bazel.sync.skip.binary.validation";
+
+  /** A {@link BuildIssueQuickFix} which simply runs an action on the project. */
+  private record QuickFix(String id, Consumer<Project> action) implements BuildIssueQuickFix {
+    @Override
+    public @NotNull String getId() {
+      return id;
+    }
+
+    @Override
+    public @NotNull CompletableFuture<?> runQuickFix(@NotNull Project project, @NotNull DataContext dataContext) {
+      action.accept(project);
+      return CompletableFuture.completedFuture(null);
+    }
+  }
+
+  private static final BuildIssueQuickFix OPEN_SETTINGS_FIX =
+      new QuickFix("bazel.settings.bazel.binary.path", ProjectStateSyncTask::showBazelBinarySetting);
+
+  private static final BuildIssueQuickFix SKIP_VALIDATION_FIX =
+      new QuickFix(SKIP_BINARY_VALIDATION_KEY, ProjectStateSyncTask::skipBinaryValidation);
+
+  static SyncProjectState collectProjectState(Project project, BlazeContext context, BlazeSyncParams syncParams)
       throws SyncCanceledException, SyncFailedException {
     ProjectStateSyncTask task = new ProjectStateSyncTask(project);
-    return task.getProjectState(context);
+    return task.getProjectState(context, syncParams);
   }
 
   private final Project project;
@@ -76,7 +124,7 @@ final class ProjectStateSyncTask {
     this.workspaceRoot = WorkspaceRoot.fromImportSettings(importSettings);
   }
 
-  private SyncProjectState getProjectState(BlazeContext context)
+  private SyncProjectState getProjectState(BlazeContext context, BlazeSyncParams params)
       throws SyncFailedException, SyncCanceledException {
     if (!FileOperationProvider.getInstance().exists(workspaceRoot.directory())) {
       String message = String.format("Workspace '%s' doesn't exist.", workspaceRoot.directory());
@@ -85,7 +133,7 @@ final class ProjectStateSyncTask {
       throw new SyncFailedException();
     }
 
-    BlazeVcsHandler vcsHandler = BlazeVcsHandler.vcsHandlerForProject(project);
+    BlazeVcsHandler vcsHandler = BlazeVcsHandlerProvider.vcsHandlerForProject(project);
     if (vcsHandler == null) {
       String message = "Could not find a VCS handler";
       IssueOutput.error(message).submit(context);
@@ -102,7 +150,9 @@ final class ProjectStateSyncTask {
           context);
       throw new SyncFailedException();
     }
-    ProjectViewSet projectViewSet = workspacePathResolverAndProjectView.projectViewSet;
+
+    final var projectViewSet = workspacePathResolverAndProjectView.projectViewSet;
+    verifyBazelBinary(context, projectViewSet);
 
     List<String> syncFlags =
         BlazeFlags.blazeFlags(
@@ -113,31 +163,31 @@ final class ProjectStateSyncTask {
             BlazeInvocationContext.SYNC_CONTEXT);
 
     ListenableFuture<BlazeInfo> blazeInfoFuture =
-        BlazeInfoRunner.getInstance()
-            .runBlazeInfo(
-                context,
-                importSettings.getBuildSystem(),
-                Blaze.getBuildSystemProvider(project)
-                    .getBuildSystem()
-                    .getDefaultInvoker(project, context)
-                    .getBinaryPath(),
-                workspaceRoot,
-                syncFlags);
+        createBazelInfoFuture(context, syncFlags, params.syncMode());
 
-    ListenableFuture<WorkingSet> workingSetFuture =
-        vcsHandler.getWorkingSet(project, context, workspaceRoot, executor);
+    ListenableFuture<WorkingSet> workingSetFuture = Futures.immediateFuture(null);
 
-    BlazeInfo blazeInfo =
+    FutureResult<BlazeInfo> blazeInfoResult =
         FutureUtil.waitForFuture(context, blazeInfoFuture)
             .timed(Blaze.buildSystemName(project) + "Info", EventType.BlazeInvocation)
             .withProgressMessage(
                 String.format("Running %s info...", Blaze.buildSystemName(project)))
             .onError(String.format("Could not run %s info", Blaze.buildSystemName(project)))
-            .run()
-            .result();
+            .run();
+
+    BlazeInfo blazeInfo = blazeInfoResult.result();
     if (blazeInfo == null) {
+      Exception exception = blazeInfoResult.exception();
+      if (exception != null) {
+        Throwable cause = exception.getCause();
+        if (cause instanceof BuildException
+                && cause.getCause() instanceof ExecutionDeniedException) {
+          throw new SyncCanceledException();
+        }
+      }
       throw new SyncFailedException();
     }
+
     BlazeVersionData blazeVersionData =
         BlazeVersionData.build(
             Blaze.getBuildSystemProvider(project).getBuildSystem(), workspaceRoot, blazeInfo);
@@ -145,6 +195,9 @@ final class ProjectStateSyncTask {
     if (!BuildSystemVersionChecker.verifyVersionSupported(context, blazeVersionData)) {
       throw new SyncFailedException();
     }
+
+    ExternalWorkspaceData externalWorkspaceData =
+        getExternalWorkspaceData(context, projectViewSet, blazeVersionData, blazeInfo);
 
     WorkspacePathResolver workspacePathResolver =
         workspacePathResolverAndProjectView.workspacePathResolver;
@@ -176,15 +229,102 @@ final class ProjectStateSyncTask {
       printWorkingSet(context, workingSet);
     }
     return SyncProjectState.builder()
-        .setProjectViewSet(projectViewSet)
-        .setLanguageSettings(workspaceLanguageSettings)
-        .setBlazeVersionData(blazeVersionData)
-        .setWorkingSet(workingSet)
-        .setWorkspacePathResolver(workspacePathResolver)
-        .build();
+               .setProjectViewSet(projectViewSet)
+               .setLanguageSettings(workspaceLanguageSettings)
+               .setBlazeVersionData(blazeVersionData)
+               .setBlazeInfo(blazeInfo)
+               .setWorkingSet(workingSet)
+               .setWorkspacePathResolver(workspacePathResolver)
+               .setExternalWorkspaceData(externalWorkspaceData)
+               .build();
+  }
+
+  /**
+   * Checks that the configured bazel binary can actually be executed. Throws
+   * a {@link SyncFailedException} if the binary is invalid.
+   *
+   * <p>The check is skipped once the user dismissed it via {@link #SKIP_BINARY_VALIDATION_KEY}.
+   */
+  private void verifyBazelBinary(BlazeContext context, ProjectViewSet projectViewSet) throws SyncFailedException {
+    if (PropertiesComponent.getInstance().getBoolean(SKIP_BINARY_VALIDATION_KEY, false)) return;
+
+    final var binaryPath = BazelBinaryUtil.resolvePath(projectViewSet);
+    final var problem = BazelBinaryUtil.validate(binaryPath, workspaceRoot.directory().toPath());
+    if (problem == null) return;
+
+    final var msg = switch (problem) {
+      case NOT_CONFIGURED -> "no binary is configured";
+      case INVALID_PATH -> String.format("not a valid path: %s", binaryPath);
+      case DOES_NOT_EXIST -> String.format("binary not found: %s", binaryPath);
+      case IS_A_DIRECTORY -> String.format("binary is a directory: %s", binaryPath);
+      case NOT_EXECUTABLE -> String.format("binary is not executable: %s", binaryPath);
+    };
+
+    IssueOutput.error("Invalid Bazel binary")
+        .withDescription(
+            "The Bazel binary could not be executed, " + msg + "\n" +
+            "The location is configured in the Bazel Settings, " +
+            "and can be overridden per project by the 'bazel_binary' section of the project view file."
+        )
+        .withOnClick(ProjectStateSyncTask::showBazelBinarySetting)
+        .withFix("Open the Bazel settings", OPEN_SETTINGS_FIX)
+        .withFix("Disable this check and retry the sync", SKIP_VALIDATION_FIX)
+        .submit(context);
+
+    throw new SyncFailedException();
+  }
+
+  private static void skipBinaryValidation(Project project) {
+    PropertiesComponent.getInstance().setValue(SKIP_BINARY_VALIDATION_KEY, true);
+    BlazeSyncManager.getInstance(project).incrementalProjectSync("BazelBinaryValidationSkipped");
+  }
+
+  private static void showBazelBinarySetting(Project project) {
+    ApplicationManager.getApplication().invokeLater(() ->
+        ShowSettingsUtilImpl.showSettingsDialog(
+            project,
+            BlazeUserSettingsCompositeConfigurable.ID,
+            BlazeUserSettingsConfigurable.BAZEL_BINARY_PATH.label()
+        )
+    );
+  }
+
+  private ListenableFuture<BlazeInfo> createBazelInfoFuture(
+      BlazeContext context,
+      List<String> syncFlags,
+      SyncMode syncMode) {
+    boolean useBazelInfoRunner = !BlazeInfoProvider.isEnabled() || syncMode == SyncMode.FULL;
+    if (useBazelInfoRunner) {
+      return BlazeInfoRunner.getInstance()
+          .runBlazeInfo(
+              project,
+              context,
+              importSettings.getBuildSystem(),
+              syncFlags);
+    }
+    return BlazeInfoProvider.getInstance(project)
+        .getBlazeInfo(
+            context,
+            syncFlags);
+  }
+
+  private ExternalWorkspaceData getExternalWorkspaceData(
+      BlazeContext context,
+      ProjectViewSet projectViewSet,
+      BlazeVersionData blazeVersionData,
+      BlazeInfo blazeInfo)
+      throws SyncFailedException {
+
+    try {
+      return ExternalWorkspaceDataProvider.getInstance(project)
+          .getExternalWorkspaceData(context, projectViewSet, blazeVersionData.getBazelVersion(), blazeInfo);
+    } catch (BuildException e) {
+      throw new SyncFailedException(e.getMessage(), e.getCause());
+    }
   }
 
   private static class WorkspacePathResolverAndProjectView {
+
     final WorkspacePathResolver workspacePathResolver;
     final ProjectViewSet projectViewSet;
 
@@ -202,8 +342,7 @@ final class ProjectStateSyncTask {
 
     for (int i = 0; i < 3; ++i) {
       WorkspacePathResolver vcsWorkspacePathResolver = null;
-      BlazeVcsHandler.BlazeVcsSyncHandler vcsSyncHandler =
-          vcsHandler.createSyncHandler(project, workspaceRoot);
+      BlazeVcsSyncHandler vcsSyncHandler = vcsHandler.createSyncHandler();
       if (vcsSyncHandler != null) {
         boolean ok =
             Scope.push(
@@ -223,14 +362,18 @@ final class ProjectStateSyncTask {
               ? vcsWorkspacePathResolver
               : new WorkspacePathResolverImpl(workspaceRoot);
 
-      ProjectViewSet projectViewSet =
-          ProjectViewManager.getInstance(project).reloadProjectView(context, workspacePathResolver);
-      if (projectViewSet == null) {
+      ProjectViewSet projectViewSet;
+      try {
+        projectViewSet =
+            ProjectViewManager.getInstance(project)
+                .reloadProjectView(context, workspacePathResolver);
+      } catch (BuildException e) {
+        context.handleException("Failed to load project view", e);
         return null;
       }
 
       if (vcsSyncHandler != null) {
-        BlazeVcsHandler.BlazeVcsSyncHandler.ValidationResult validationResult =
+        ValidationResult validationResult =
             vcsSyncHandler.validateProjectView(context, projectViewSet);
         switch (validationResult) {
           case OK:
@@ -272,7 +415,7 @@ final class ProjectStateSyncTask {
       context.output(PrintOutput.log("  " + message));
     }
     if (messages.size() > maxFiles) {
-      context.output(PrintOutput.log(String.format("  (and %d more)", messages.size() - maxFiles)));
+      context.output(PrintOutput.log(String.format(Locale.ROOT, "  (and %d more)", messages.size() - maxFiles)));
     }
     context.output(PrintOutput.output(""));
   }

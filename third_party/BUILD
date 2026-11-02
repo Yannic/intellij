@@ -1,3 +1,6 @@
+load("@rules_java//java:java_import.bzl", "java_import")
+load("@rules_java//java:java_library.bzl", "java_library")
+
 package(default_visibility = ["//visibility:public"])
 
 # The JDI parts of tools.jar.
@@ -9,13 +12,4 @@ java_import(
 java_library(
     name = "python",
     exports = ["//third_party/python"],
-)
-
-java_library(
-    name = "truth",
-    exports = [
-        "@diffutils//jar",
-        "@truth//jar",
-        "@truth8//jar",
-    ],
 )

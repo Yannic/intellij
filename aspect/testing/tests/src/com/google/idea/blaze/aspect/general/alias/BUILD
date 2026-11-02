@@ -1,13 +1,15 @@
-licenses(["notice"])
-
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_java//java:defs.bzl", "java_library", "java_test")
 load(
     "//aspect/testing/rules:intellij_aspect_test_fixture.bzl",
     "intellij_aspect_test_fixture",
 )
 
-java_library(
+licenses(["notice"])
+
+cc_binary(
     name = "test",
-    srcs = ["Foo.java"],
+    srcs = ["simple/simple.cc"],
     deps = [":alias"],
 )
 
@@ -21,9 +23,9 @@ alias(
     actual = ":real",
 )
 
-java_library(
+cc_binary(
     name = "real",
-    srcs = ["Foo.java"],
+    srcs = ["simple/simple.cc"],
 )
 
 intellij_aspect_test_fixture(
@@ -41,7 +43,7 @@ java_test(
         "//aspect/testing/rules:IntellijAspectTest",
         "//aspect/testing/rules:intellij_aspect_test_fixture_java_proto",
         "//intellij_platform_sdk:test_libs",
-        "//proto:intellij_ide_info_java_proto",
-        "@junit//jar",
+        "//proto:proto_deps",
+        "//third_party/java/junit",
     ],
 )

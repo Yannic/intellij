@@ -16,7 +16,6 @@
 package com.google.idea.blaze.typescript;
 
 import com.google.common.base.Ascii;
-import com.google.common.base.Charsets;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.gson.JsonElement;
@@ -30,11 +29,15 @@ import com.google.idea.blaze.base.model.primitives.Label;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BuildSystemName;
+import com.intellij.lang.javascript.config.JSFileImports;
+import com.intellij.lang.javascript.config.JSFileImportsImpl;
+import com.intellij.lang.javascript.config.JSModuleResolution;
+import com.intellij.lang.javascript.config.JSModuleTarget;
+import com.intellij.lang.javascript.frameworks.modules.JSModuleMapping;
+import com.intellij.lang.javascript.frameworks.modules.JSModulePathMappings;
 import com.intellij.lang.javascript.frameworks.modules.JSModulePathSubstitution;
 import com.intellij.lang.javascript.library.JSLibraryUtil;
 import com.intellij.lang.typescript.tsconfig.TypeScriptConfig;
-import com.intellij.lang.typescript.tsconfig.TypeScriptFileImports;
-import com.intellij.lang.typescript.tsconfig.TypeScriptFileImportsImpl;
 import com.intellij.lang.typescript.tsconfig.TypeScriptFileImportsResolver;
 import com.intellij.lang.typescript.tsconfig.TypeScriptImportConfigResolveContextImpl;
 import com.intellij.lang.typescript.tsconfig.TypeScriptImportResolveContext;
@@ -49,9 +52,13 @@ import com.intellij.openapi.vfs.VfsUtil;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.PsiFileSystemItem;
 import com.intellij.psi.PsiManager;
+import org.jetbrains.annotations.NotNull;
+
+import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -60,7 +67,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import javax.annotation.Nullable;
 
 /**
  * {@link TypeScriptConfig} with special handling for tsconfig_editor.json and tsconfig.runfiles.
@@ -85,7 +91,6 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   private final NotNullLazyValue<TypeScriptConfigIncludeBase> includeChecker;
   private final NotNullLazyValue<TypeScriptImportResolveContext> resolveContext;
   private final NotNullLazyValue<TypeScriptFileImportsResolver> importResolver;
-  private final NotNullLazyValue<TypeScriptFileImports> importStructure;
 
   // tsconfig.json default values
   private boolean compileOnSave = false;
@@ -95,8 +100,8 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   private final NullableLazyValue<VirtualFile> baseUrlFile;
   private boolean inlineSourceMap = true;
   private String jsxFactory = "React.createElement";
-  private ModuleTarget module = ModuleTarget.COMMON_JS;
-  private ModuleResolution moduleResolution = ModuleResolution.NODE;
+  private JSModuleTarget module = JSModuleTarget.COMMON_JS;
+  private JSModuleResolution moduleResolution = JSModuleResolution.NODE;
   private boolean noImplicitAny = true;
   private boolean noImplicitThis = true;
   private boolean noLib = true;
@@ -112,6 +117,8 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   // end compilerOptions
   private final List<String> filesStrings = new ArrayList<>();
   private final NotNullLazyValue<List<VirtualFile>> files;
+  private final NotNullLazyValue<JSFileImports> importStructure;
+
 
   @Nullable
   static TypeScriptConfig getInstance(Project project, Label label, File tsconfig) {
@@ -129,7 +136,7 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
           new JsonParser()
               .parse(
                   new InputStreamReader(
-                      InputStreamProvider.getInstance().forFile(tsconfig), Charsets.UTF_8))
+                      InputStreamProvider.getInstance().forFile(tsconfig), StandardCharsets.UTF_8))
               .getAsJsonObject();
       tsconfigEditor =
           FileOperationProvider.getInstance()
@@ -156,7 +163,7 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
 
     return FileOperationProvider.getInstance().exists(tsconfigEditor)
         ? new BlazeTypeScriptConfig(
-            project, label, configFile, tsconfigEditor, workspacePrefix, workspaceRelativePath)
+        project, label, configFile, tsconfigEditor, workspacePrefix, workspaceRelativePath)
         : null;
   }
 
@@ -212,9 +219,9 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
             () ->
                 baseUrlFile.getValue() != null
                     ? rootDirs.stream()
-                        .map(baseUrlFile.getValue()::findFileByRelativePath)
-                        .filter(Objects::nonNull)
-                        .collect(ImmutableList.toImmutableList())
+                    .map(baseUrlFile.getValue()::findFileByRelativePath)
+                    .filter(Objects::nonNull)
+                    .collect(ImmutableList.toImmutableList())
                     : ImmutableList.of());
     this.rootDirsPsiElements =
         NotNullLazyValue.createValue(
@@ -240,15 +247,15 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
     this.importResolver =
         NotNullLazyValue.createValue(
             () -> TypeScriptImportsResolverProvider.getResolver(project, this));
-    this.importStructure =
-        NotNullLazyValue.createValue(() -> new TypeScriptFileImportsImpl(project, this));
+    importStructure =  NotNullLazyValue.createValue(() -> new JSFileImportsImpl(project, this));
 
     try {
       parseJson(
           new JsonParser()
               .parse(
                   new InputStreamReader(
-                      InputStreamProvider.getInstance().forFile(tsconfigEditor), Charsets.UTF_8))
+                      InputStreamProvider.getInstance().forFile(tsconfigEditor),
+                      StandardCharsets.UTF_8))
               .getAsJsonObject());
     } catch (IOException e) {
       logger.warn(e);
@@ -303,26 +310,26 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
         case "module":
           switch (Ascii.toLowerCase(value.getAsString())) {
             case "commonjs":
-              this.module = ModuleTarget.COMMON_JS;
+              this.module = JSModuleTarget.COMMON_JS;
               break;
             case "other":
-              this.module = ModuleTarget.OTHER;
+              this.module = JSModuleTarget.OTHER;
               break;
             default:
-              this.module = ModuleTarget.UNKNOWN;
+              this.module = JSModuleTarget.UNKNOWN;
               break;
           }
           break;
         case "moduleResolution":
           switch (Ascii.toLowerCase(value.getAsString())) {
             case "node":
-              this.moduleResolution = ModuleResolution.NODE;
+              this.moduleResolution = JSModuleResolution.NODE;
               break;
             case "classic":
-              this.moduleResolution = ModuleResolution.CLASSIC;
+              this.moduleResolution = JSModuleResolution.CLASSIC;
               break;
             default:
-              this.moduleResolution = ModuleResolution.UNKNOWN;
+              this.moduleResolution = JSModuleResolution.UNKNOWN;
               break;
           }
           break;
@@ -466,6 +473,16 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   }
 
   @Override
+  public JSFileImports getConfigImportResolveStructure() {
+    return importStructure.getValue();
+  }
+
+  @Override
+  public @NotNull JSModulePathMappings<JSModulePathSubstitution> getPathMappings() {
+    return JSModulePathMappings.build(paths);
+  }
+
+  @Override
   public boolean isDirectoryBased() {
     return false;
   }
@@ -481,8 +498,8 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   }
 
   @Override
-  public Collection<JSModulePathSubstitution> getPaths() {
-    return paths;
+  public @Nullable String getDeclarationDir() {
+    return null;
   }
 
   @Override
@@ -491,7 +508,7 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   }
 
   @Override
-  public LanguageTarget getLanguageTarget() {
+  public LanguageTarget getLanguageTarget(boolean ts6orNewer) {
     return target;
   }
 
@@ -533,22 +550,12 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   }
 
   @Override
-  public ModuleResolution getResolution() {
-    return moduleResolution;
-  }
-
-  @Override
-  public ModuleResolution getEffectiveResolution() {
-    return moduleResolution;
-  }
-
-  @Override
   public Collection<String> getTypes() {
     return types;
   }
 
   @Override
-  public ModuleTarget getModule() {
+  public JSModuleTarget getModule() {
     return module;
   }
 
@@ -648,17 +655,17 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   }
 
   @Override
-  public boolean noImplicitAny() {
+  public boolean noImplicitAny(boolean ts6orNewer) {
     return noImplicitAny;
   }
 
   @Override
-  public boolean noImplicitThis() {
+  public boolean noImplicitThis(boolean ts6orNewer) {
     return noImplicitThis;
   }
 
   @Override
-  public boolean strictNullChecks() {
+  public boolean strictNullChecks(boolean ts6orNewer) {
     return strictNullChecks;
   }
 
@@ -668,7 +675,7 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   }
 
   @Override
-  public boolean strictBindCallApply() {
+  public boolean strictBindCallApply(boolean ts6orNewer) {
     return false;
   }
 
@@ -700,11 +707,6 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   }
 
   @Override
-  public TypeScriptFileImports getConfigImportResolveStructure() {
-    return importStructure.getValue();
-  }
-
-  @Override
   public TypeScriptFileImportsResolver getImportResolver() {
     return importResolver.getValue();
   }
@@ -717,6 +719,16 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
   @Override
   public boolean keyofStringsOnly() {
     return false;
+  }
+
+  @Override
+  public @NotNull JSModuleResolution getEffectiveModuleResolution() {
+    return moduleResolution;
+  }
+
+  @Override
+  public @NotNull JSModuleResolution getModuleResolution() {
+    return moduleResolution;
   }
 
   static class PathSubstitution implements JSModulePathSubstitution {
@@ -743,8 +755,8 @@ class BlazeTypeScriptConfig implements TypeScriptConfig {
     }
 
     @Override
-    public Collection<String> getMappings() {
-      return mappings;
+    public Collection<JSModuleMapping> getMappings() {
+      return mappings.stream().distinct().map(JSModuleMapping::new).collect(ImmutableList.toImmutableList());
     }
 
     @Override

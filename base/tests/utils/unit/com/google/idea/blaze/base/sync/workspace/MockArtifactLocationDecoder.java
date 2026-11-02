@@ -15,12 +15,13 @@
  */
 package com.google.idea.blaze.base.sync.workspace;
 
-import com.google.idea.blaze.base.command.buildresult.BlazeArtifact;
-import com.google.idea.blaze.base.command.buildresult.LocalFileOutputArtifact;
+import com.google.idea.blaze.base.command.buildresult.LocalFileOutputArtifactWithoutDigest;
 import com.google.idea.blaze.base.command.buildresult.SourceArtifact;
 import com.google.idea.blaze.base.ideinfo.ArtifactLocation;
 import com.google.idea.blaze.base.sync.FakeRemoteOutputArtifact;
+import com.google.idea.blaze.common.artifact.BlazeArtifact;
 import java.io.File;
+import java.nio.file.Path;
 import org.jetbrains.annotations.Nullable;
 
 /** Resolves all artifacts to local source files. */
@@ -39,7 +40,7 @@ public class MockArtifactLocationDecoder implements ArtifactLocationDecoder {
 
   @Override
   public File decode(ArtifactLocation artifactLocation) {
-    return new File(workspaceRoot, artifactLocation.getRelativePath());
+    return new File(workspaceRoot, artifactLocation.relativePath());
   }
 
   @Override
@@ -50,14 +51,15 @@ public class MockArtifactLocationDecoder implements ArtifactLocationDecoder {
   @Override
   public BlazeArtifact resolveOutput(ArtifactLocation artifact) {
     if (artifact.isSource()) {
-      return new SourceArtifact(decode(artifact));
+      return new SourceArtifact(decode(artifact), Path.of(artifact.getExecutionRootRelativePath()));
     }
 
     File file = decode(artifact);
+    int artifactPathPrefixLength = Path.of(artifact.rootPath()).getNameCount();
     if (isRemote && file.exists()) {
-      return new FakeRemoteOutputArtifact(file);
+      return new FakeRemoteOutputArtifact(file, workspaceRoot.toPath().relativize(file.toPath()), artifactPathPrefixLength);
     }
-    return new LocalFileOutputArtifact(
-        decode(artifact), artifact.getRelativePath(), artifact.getExecutionRootRelativePath());
+    return new LocalFileOutputArtifactWithoutDigest(
+      decode(artifact), Path.of(artifact.getExecutionRootRelativePath()), artifactPathPrefixLength);
   }
 }

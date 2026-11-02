@@ -29,9 +29,9 @@ import com.google.idea.blaze.base.projectview.ProjectViewSet;
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.sync.BlazeSyncPlugin;
 import com.google.idea.blaze.common.PrintOutput;
-import com.google.idea.sdkcompat.general.BaseSdkCompat;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.externalSystem.service.project.IdeModifiableModelsProvider;
+import com.intellij.openapi.externalSystem.service.project.IdeModifiableModelsProviderImpl;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.DependencyScope;
 import com.intellij.openapi.roots.ModifiableRootModel;
@@ -41,6 +41,7 @@ import com.intellij.openapi.roots.libraries.LibraryTablesRegistrar;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -56,15 +57,14 @@ public class LibraryEditor {
       BlazeProjectData blazeProjectData,
       Collection<BlazeLibrary> libraries) {
     Set<LibraryKey> intelliJLibraryState = Sets.newHashSet();
-    IdeModifiableModelsProvider modelsProvider =
-        BaseSdkCompat.createModifiableModelsProvider(project);
+    IdeModifiableModelsProvider modelsProvider = new IdeModifiableModelsProviderImpl(project);
     for (Library library : modelsProvider.getAllLibraries()) {
       String name = library.getName();
       if (name != null) {
         intelliJLibraryState.add(LibraryKey.fromIntelliJLibraryName(name));
       }
     }
-    context.output(PrintOutput.log(String.format("Workspace has %d libraries", libraries.size())));
+    context.output(PrintOutput.log(String.format(Locale.ROOT, "Workspace has %d libraries", libraries.size())));
 
     try {
       Set<String> newLibraryKeys = new HashSet<>();

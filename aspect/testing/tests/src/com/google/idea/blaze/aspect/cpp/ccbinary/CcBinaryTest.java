@@ -17,35 +17,44 @@ package com.google.idea.blaze.aspect.cpp.ccbinary;
 
 import static com.google.common.truth.Truth.assertThat;
 
-import com.google.devtools.intellij.IntellijAspectTestFixtureOuterClass.IntellijAspectTestFixture;
-import com.google.devtools.intellij.ideinfo.IntellijIdeInfo.CIdeInfo;
-import com.google.devtools.intellij.ideinfo.IntellijIdeInfo.TargetIdeInfo;
 import com.google.idea.blaze.BazelIntellijAspectTest;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/** Tests cc_binary */
 @RunWith(JUnit4.class)
 public class CcBinaryTest extends BazelIntellijAspectTest {
+
   @Test
   public void testCcBinary() throws Exception {
-    IntellijAspectTestFixture testFixture = loadTestFixture(":simple_fixture");
-    TargetIdeInfo target = findTarget(testFixture, ":simple");
-    assertThat(target.getKindString()).isEqualTo("cc_binary");
+    final var testFixture = loadTestFixture(":aspect_fixture");
+    final var target = findTarget(testFixture, ":simple");
+    assertThat(target.getKind()).isEqualTo("cc_binary");
 
-    assertThat(target.hasCIdeInfo()).isTrue();
-    assertThat(target.hasJavaIdeInfo()).isFalse();
-    assertThat(target.hasAndroidIdeInfo()).isFalse();
-    CIdeInfo cTargetIdeInfo = target.getCIdeInfo();
+    final var ideInfo = target.getCIdeInfo();
+    assertThat(ideInfo.hasCompilationContext()).isTrue();
+    assertThat(ideInfo.hasRuleContext()).isTrue();
 
-    assertThat(cTargetIdeInfo.getTargetCoptList()).isEmpty();
+    // rule context
+    final var ruleCtx = ideInfo.getRuleContext();
+    assertThat(ruleCtx.getCoptsList()).isEmpty();
+    assertThat(ruleCtx.getArgs(0)).isEqualTo("simpleArg");
+    assertThat(target.getSrcs(0).getRelativePath()).endsWith("simple/simple.cc");
 
-    // Can't test for this because the cc code stuffs source artifacts into
-    // the output group
-    // assertThat(testFixture.getIntellijResolveFilesList()).isEmpty();
-    assertThat(getOutputGroupFiles(testFixture, "intellij-info-cpp"))
-        .contains(testRelative(intellijInfoFileName("simple")));
+    // output groups
+    assertThat(getOutputGroupFiles(testFixture, "intellij-resolve-cpp")).isEmpty();
     assertThat(getOutputGroupFiles(testFixture, "intellij-info-generic")).isEmpty();
+    assertThat(getOutputGroupFiles(testFixture, "intellij-info-cpp")).contains(testRelative(intellijInfoFileName("simple")));
+  }
+
+  @Test
+  public void testExpandDataDeps() throws Exception {
+    final var testFixture = loadTestFixture(":aspect_fixture");
+    final var target = findTarget(testFixture, ":expand_datadeps");
+    assertThat(target.getKind()).isEqualTo("cc_binary");
+
+    final var args = target.getCIdeInfo().getRuleContext().getArgsList();
+    assertThat(args).hasSize(1);
+    assertThat(args.get(0)).endsWith("datadepfile.txt");
   }
 }

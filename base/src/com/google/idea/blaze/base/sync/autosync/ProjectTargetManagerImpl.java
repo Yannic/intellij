@@ -32,8 +32,11 @@ import com.google.idea.blaze.base.sync.projectview.TargetExpressionList;
 import com.google.idea.blaze.base.sync.workspace.WorkspaceHelper;
 import com.google.idea.blaze.base.targetmaps.SourceToTargetMap;
 import com.intellij.ide.projectView.ProjectView;
-import com.intellij.openapi.components.ServiceManager;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.util.concurrency.annotations.RequiresEdt;
 import java.io.File;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.Nullable;
@@ -42,7 +45,7 @@ import javax.annotation.Nullable;
 class ProjectTargetManagerImpl implements ProjectTargetManager {
 
   static ProjectTargetManagerImpl getImpl(Project project) {
-    return ServiceManager.getService(project, ProjectTargetManagerImpl.class);
+    return project.getService(ProjectTargetManagerImpl.class);
   }
 
   private final Project project;
@@ -77,7 +80,7 @@ class ProjectTargetManagerImpl implements ProjectTargetManager {
     ImmutableCollection<TargetKey> syncedTargets =
         SourceToTargetMap.getInstance(project).getRulesForSourceFile(source);
     if (!syncedTargets.isEmpty()) {
-      return syncedTargets.stream().anyMatch(t -> syncInProgress(t.getLabel()))
+      return syncedTargets.stream().anyMatch(t -> syncInProgress(t.label()))
           ? SyncStatus.RESYNCING
           : SyncStatus.SYNCED;
     }
@@ -101,7 +104,7 @@ class ProjectTargetManagerImpl implements ProjectTargetManager {
     BlazeProjectData projectData =
         BlazeProjectDataManager.getInstance(project).getBlazeProjectData();
     return projectData != null
-        && projectData.getTargetMap().contains(TargetKey.forPlainTarget(target));
+        && projectData.targetMap().contains(TargetKey.forPlainTarget(target));
   }
 
   @Override
@@ -147,8 +150,11 @@ class ProjectTargetManagerImpl implements ProjectTargetManager {
       if (fullProjectSync) {
         manager.projectSyncStatus = SyncStatus.RESYNCING;
       }
-      // refresh the sync status indicators
-      ProjectView.getInstance(project).refresh();
+
+      ApplicationManager.getApplication().invokeLater(
+          () -> refreshSyncStatusIndicators(project),
+          project.getDisposed()
+      );
     }
 
     @Override
@@ -161,9 +167,21 @@ class ProjectTargetManagerImpl implements ProjectTargetManager {
       ProjectTargetManagerImpl manager = getImpl(project);
       buildIds.forEach(manager.inProgressBuilds::remove);
       manager.updateProjectSyncStatus();
-      if (!syncResult.successful()) {
-        // project view won't otherwise update for failed/cancelled syncs
-        ProjectView.getInstance(project).refresh();
+      SourceToTargetMap.getInstance(project).init();
+
+      ApplicationManager.getApplication().invokeLater(
+          () -> refreshSyncStatusIndicators(project),
+          project.getDisposed()
+      );
+    }
+
+    @RequiresEdt
+    private static void refreshSyncStatusIndicators(Project project) {
+      ProjectView.getInstance(project).refresh();
+
+      final var fileEditorManager = FileEditorManager.getInstance(project);
+      for (final var file : fileEditorManager.getOpenFiles()) {
+        fileEditorManager.updateFilePresentation(file);
       }
     }
   }

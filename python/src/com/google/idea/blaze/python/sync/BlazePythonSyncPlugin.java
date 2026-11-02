@@ -1,11 +1,11 @@
 /*
- * Copyright 2017 The Bazel Authors. All rights reserved.
+ * Copyright 2024 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -41,6 +41,7 @@ import com.google.idea.blaze.base.sync.BlazeSyncPlugin;
 import com.google.idea.blaze.base.sync.GenericSourceFolderProvider;
 import com.google.idea.blaze.base.sync.SourceFolderProvider;
 import com.google.idea.blaze.base.sync.projectview.WorkspaceLanguageSettings;
+import com.google.idea.blaze.python.projectview.PythonCodeGeneratorRuleNamesSection;
 import com.google.idea.common.util.Transactions;
 import com.intellij.facet.Facet;
 import com.intellij.facet.FacetManager;
@@ -64,6 +65,7 @@ import com.jetbrains.python.sdk.PythonSdkUtil;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -112,7 +114,7 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
   @Nullable
   @Override
   public SourceFolderProvider getSourceFolderProvider(BlazeProjectData projectData) {
-    if (!projectData.getWorkspaceLanguageSettings().isWorkspaceType(WorkspaceType.PYTHON)) {
+    if (!projectData.workspaceLanguageSettings().isWorkspaceType(WorkspaceType.PYTHON)) {
       return null;
     }
     return GenericSourceFolderProvider.INSTANCE;
@@ -129,7 +131,7 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
       ModuleEditor moduleEditor,
       Module workspaceModule,
       ModifiableRootModel workspaceModifiableModel) {
-    if (blazeProjectData.getTargetMap().targets().stream()
+    if (blazeProjectData.targetMap().targets().stream()
         .allMatch(target -> target.getPyIdeInfo() == null)) {
       return;
     }
@@ -139,7 +141,7 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
 
   @Override
   public boolean refreshExecutionRoot(Project project, BlazeProjectData blazeProjectData) {
-    return blazeProjectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.PYTHON);
+    return blazeProjectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.PYTHON);
   }
 
   private static void updatePythonFacet(
@@ -151,8 +153,8 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
     if (!PythonFacetUtil.usePythonFacets()) {
       return;
     }
-    if (!blazeProjectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.PYTHON)
-        || blazeProjectData.getWorkspaceLanguageSettings().isWorkspaceType(WorkspaceType.PYTHON)) {
+    if (!blazeProjectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.PYTHON)
+        || blazeProjectData.workspaceLanguageSettings().isWorkspaceType(WorkspaceType.PYTHON)) {
       removeFacet(workspaceModule);
       return;
     }
@@ -303,7 +305,7 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
       ProjectViewSet projectViewSet,
       BlazeVersionData blazeVersionData,
       BlazeProjectData blazeProjectData) {
-    if (!blazeProjectData.getWorkspaceLanguageSettings().isWorkspaceType(WorkspaceType.PYTHON)) {
+    if (!blazeProjectData.workspaceLanguageSettings().isWorkspaceType(WorkspaceType.PYTHON)) {
       return;
     }
     Sdk currentSdk = ProjectRootManager.getInstance(project).getProjectSdk();
@@ -350,7 +352,7 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
     Set<PythonVersion> configuredVersions = new HashSet<>();
     List<PythonVersion> compatibleVersions = new ArrayList<>(DEFAULT_PYTHON_VERSIONS);
 
-    for (TargetIdeInfo ideInfo : blazeProjectData.getTargetMap().targets()) {
+    for (TargetIdeInfo ideInfo : blazeProjectData.targetMap().targets()) {
       PyIdeInfo pyIdeInfo = ideInfo.getPyIdeInfo();
       if (pyIdeInfo == null) {
         continue;
@@ -458,7 +460,7 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
               ? "Click here to remove it, retaining python support"
               : "Please remove it and resync.";
       IssueOutput.error(msg)
-          .navigatable(
+          .withNavigatable(
               project == null || !fixable
                   ? null
                   : new NavigatableAdapter() {
@@ -507,6 +509,14 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
     builder.replace(
         existingSection,
         ListSection.update(AdditionalLanguagesSection.KEY, existingSection)
-            .remove(LanguageClass.PYTHON));
+            .removeAll(LanguageClass.PYTHON));
+  }
+
+  @Override
+  public Collection<String> getCodeGeneratorRuleNames(ProjectViewSet viewSet, LanguageClass languageClass) {
+    if (languageClass == LanguageClass.PYTHON) {
+      return viewSet.listItems(PythonCodeGeneratorRuleNamesSection.KEY);
+    }
+    return ImmutableList.of();
   }
 }

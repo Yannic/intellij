@@ -15,7 +15,6 @@
  */
 package com.google.idea.blaze.base.run.producers;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -36,6 +35,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.psi.PsiElement;
 import com.intellij.util.ui.UIUtil;
 import javax.annotation.Nullable;
+import org.jetbrains.ide.PooledThreadExecutor;
 
 /**
  * For situations where we appear to be in a recognized test context, but can't efficiently resolve
@@ -51,7 +51,7 @@ class PendingAsyncTestContext extends TestContext implements PendingRunConfigura
       ImmutableSet<ExecutorType> supportedExecutors,
       ListenableFuture<TargetInfo> target,
       PsiElement sourceElement,
-      ImmutableList<BlazeFlagsModification> blazeFlags,
+      @Nullable String testFilter,
       @Nullable String description) {
     Project project = sourceElement.getProject();
     String buildSystem = Blaze.buildSystemName(project);
@@ -66,14 +66,14 @@ class PendingAsyncTestContext extends TestContext implements PendingRunConfigura
               }
               RunConfigurationContext context =
                   PendingWebTestContext.findWebTestContext(
-                      project, supportedExecutors, t, sourceElement, blazeFlags, description);
+                      project, supportedExecutors, t, sourceElement, testFilter, description);
               return context != null
                   ? context
-                  : new KnownTargetTestContext(t, sourceElement, blazeFlags, description);
+                  : new KnownTargetTestContext(t, sourceElement, testFilter, description);
             },
-            MoreExecutors.directExecutor());
+            PooledThreadExecutor.INSTANCE);
     return new PendingAsyncTestContext(
-        supportedExecutors, future, progressMessage, sourceElement, blazeFlags, description);
+        supportedExecutors, future, progressMessage, sourceElement, testFilter, description);
   }
 
   private final ImmutableSet<ExecutorType> supportedExecutors;
@@ -85,9 +85,9 @@ class PendingAsyncTestContext extends TestContext implements PendingRunConfigura
       ListenableFuture<RunConfigurationContext> future,
       String progressMessage,
       PsiElement sourceElement,
-      ImmutableList<BlazeFlagsModification> blazeFlags,
+      @Nullable String testFilter,
       @Nullable String description) {
-    super(sourceElement, blazeFlags, description);
+    super(sourceElement, testFilter, description);
     this.supportedExecutors = supportedExecutors;
     this.future = recursivelyResolveContext(future);
     this.progressMessage = progressMessage;

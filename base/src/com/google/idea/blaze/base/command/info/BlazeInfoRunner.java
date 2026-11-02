@@ -16,42 +16,30 @@
 package com.google.idea.blaze.base.command.info;
 
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
+import com.google.idea.blaze.base.bazel.BuildSystem.BuildInvoker;
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.settings.BuildSystemName;
-import com.intellij.openapi.components.ServiceManager;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.project.Project;
 import java.util.List;
 
 /** Runs the blaze info command. The results may be cached in the workspace. */
 public abstract class BlazeInfoRunner {
 
   public static BlazeInfoRunner getInstance() {
-    return ServiceManager.getService(BlazeInfoRunner.class);
+    return ApplicationManager.getApplication().getService(BlazeInfoRunner.class);
   }
 
   /**
    * @param blazeFlags The blaze flags that will be passed to Blaze.
-   * @param key The key passed to blaze info
-   * @return The blaze info value associated with the specified key
-   */
-  public abstract ListenableFuture<String> runBlazeInfo(
-      BlazeContext context,
-      String binaryPath,
-      WorkspaceRoot workspaceRoot,
-      List<String> blazeFlags,
-      String key);
-
-  /**
-   * @param blazeFlags The blaze flags that will be passed to Blaze.
-   * @param key The key passed to blaze info
+   * @param keys The keys passed to blaze info
    * @return The blaze info value associated with the specified key
    */
   public abstract ListenableFuture<byte[]> runBlazeInfoGetBytes(
+      Project project,
       BlazeContext context,
-      String binaryPath,
-      WorkspaceRoot workspaceRoot,
       List<String> blazeFlags,
-      String key);
+      String ...keys);
 
   /**
    * This calls blaze info without any specific key so blaze info will return all keys and values
@@ -61,9 +49,8 @@ public abstract class BlazeInfoRunner {
    * @return The blaze info data fields.
    */
   public abstract ListenableFuture<BlazeInfo> runBlazeInfo(
+      Project project,
       BlazeContext context,
       BuildSystemName buildSystemName,
-      String binaryPath,
-      WorkspaceRoot workspaceRoot,
       List<String> blazeFlags);
 }

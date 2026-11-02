@@ -16,12 +16,10 @@
 package com.google.idea.blaze.base.issueparser;
 
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.idea.blaze.base.scope.output.IssueOutput.Category.ERROR;
-import static com.google.idea.blaze.base.scope.output.IssueOutput.Category.NOTE;
-import static com.google.idea.blaze.base.scope.output.IssueOutput.Category.WARNING;
 
 import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Streams;
 import com.google.idea.blaze.base.command.BlazeInvocationContext;
 import com.google.idea.blaze.base.model.primitives.Label;
 import com.google.idea.blaze.base.model.primitives.TargetExpression;
@@ -34,8 +32,10 @@ import com.google.idea.blaze.base.projectview.section.SectionKey;
 import com.google.idea.blaze.base.projectview.section.sections.TargetSection;
 import com.google.idea.blaze.base.run.filter.FileResolver;
 import com.google.idea.blaze.base.scope.output.IssueOutput;
+import com.intellij.build.events.MessageEvent.Kind;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.TextRange;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -47,10 +47,48 @@ import javax.annotation.Nullable;
 /** Parses blaze output for compile errors. */
 public class BlazeIssueParser {
 
-  public static ImmutableList<BlazeIssueParser.Parser> defaultIssueParsers(
+  private static final String BAZEL_BUILD_FILES_PATTERN = "(/.*?BUILD(?:\\.bazel)?)";
+
+  private static ImmutableList<Parser> commonParsers(Project project, WorkspaceRoot workspaceRoot, ProjectViewSet projectViewSet) {
+    return ImmutableList.<Parser>builder()
+            .add(
+                    new PythonCompileParser(project),
+                    new DefaultCompileParser(project),
+                    new TracebackParser(),
+                    new BuildParser(),
+                    new SkylarkErrorParser(),
+                    new LinelessBuildParser(),
+                    new InvalidTargetProjectViewPackageParser(
+                            projectViewSet, "no such package '(.*)': BUILD file not found on package path"),
+                    new InvalidTargetProjectViewPackageParser(
+                            projectViewSet, "ERROR: invalid target format '(.*?)'"),
+                    new FileNotFoundBuildParser(workspaceRoot)
+            )
+            .build();
+  }
+
+  // When it comes to target detection, it's highly probable that we'll encounter files that aren't
+  // associated with any target. We aim to avoid raising visible errors in such cases.
+  public static ImmutableList<BlazeIssueParser.Parser> targetDetectionQueryParsers(
       Project project,
-      WorkspaceRoot workspaceRoot,
-      BlazeInvocationContext.ContextType invocationContext) {
+      WorkspaceRoot workspaceRoot) {
+    ProjectViewSet projectViewSet = ProjectViewManager.getInstance(project).getProjectViewSet();
+    if (projectViewSet == null) {
+      // some parsers will work regardless, but don't even bother splitting them if there's no
+      // project view available
+      return ImmutableList.of();
+    }
+
+    return ImmutableList.<Parser>builder()
+            .addAll(commonParsers(project, workspaceRoot, projectViewSet))
+            .add(GenericErrorParser.FOR_TARGET_DETECTION_QUERY)
+            .build();
+  }
+
+  public static ImmutableList<BlazeIssueParser.Parser> defaultIssueParsers(
+          Project project,
+          WorkspaceRoot workspaceRoot,
+          BlazeInvocationContext.ContextType invocationContext) {
     ProjectViewSet projectViewSet = ProjectViewManager.getInstance(project).getProjectViewSet();
     if (projectViewSet == null) {
       // some parsers will work regardless, but don't even bother splitting them if there's no
@@ -61,25 +99,15 @@ public class BlazeIssueParser {
     ImmutableList.Builder<BlazeIssueParser.Parser> parsers =
         ImmutableList.<BlazeIssueParser.Parser>builder()
             .add(
-                new BlazeIssueParser.PythonCompileParser(project),
-                new BlazeIssueParser.DefaultCompileParser(project),
-                new BlazeIssueParser.TracebackParser(),
-                new BlazeIssueParser.BuildParser(),
-                new BlazeIssueParser.SkylarkErrorParser(),
-                new BlazeIssueParser.LinelessBuildParser(),
                 new BlazeIssueParser.ProjectViewLabelParser(projectViewSet),
-                new BlazeIssueParser.InvalidTargetProjectViewPackageParser(
-                    projectViewSet, "no such package '(.*)': BUILD file not found on package path"),
                 new BlazeIssueParser.InvalidTargetProjectViewPackageParser(
                     projectViewSet, "no targets found beneath '(.*?)'"),
                 new BlazeIssueParser.InvalidTargetProjectViewPackageParser(
-                    projectViewSet, "ERROR: invalid target format '(.*?)'"),
-                new BlazeIssueParser.InvalidTargetProjectViewPackageParser(
-                    projectViewSet, "ERROR: Skipping '(.*?)'"),
-                new BlazeIssueParser.FileNotFoundBuildParser(workspaceRoot))
-            .addAll(BlazeIssueParserProvider.getAllIssueParsers(project));
+                    projectViewSet, "ERROR: Skipping '(.*?)'")
+                )
+            .addAll(commonParsers(project, workspaceRoot, projectViewSet));
     if (invocationContext == BlazeInvocationContext.ContextType.Sync) {
-      parsers.add(BlazeIssueParser.GenericErrorParser.INSTANCE);
+      parsers.add(BlazeIssueParser.GenericErrorParser.FOR_SYNC);
     }
     return parsers.build();
   }
@@ -194,11 +222,8 @@ public class BlazeIssueParser {
     @Override
     protected IssueOutput createIssue(Matcher matcher) {
       final File file = FileResolver.resolveToFile(project, matcher.group(1));
-      return IssueOutput.issue(ERROR, matcher.group(3))
-          .inFile(file)
-          .onLine(Integer.parseInt(matcher.group(2)))
-          .consoleHyperlinkRange(
-              union(fileHighlightRange(matcher, 1), matchedTextRange(matcher, 0, 2)))
+      return IssueOutput.error(matcher.group(3))
+          .withFile(file, Integer.parseInt(matcher.group(2)), 0)
           .build();
     }
   }
@@ -224,35 +249,31 @@ public class BlazeIssueParser {
     @Override
     protected IssueOutput createIssue(Matcher matcher) {
       final File file = FileResolver.resolveToFile(project, matcher.group(1));
-      IssueOutput.Category category = messageCategory(matcher.group(4));
-      return IssueOutput.issue(category, matcher.group(5))
-          .inFile(file)
-          .onLine(Integer.parseInt(matcher.group(2)))
-          .inColumn(parseOptionalInt(matcher.group(3)))
-          .consoleHyperlinkRange(
-              union(fileHighlightRange(matcher, 1), matchedTextRange(matcher, 2, 3)))
+      final var kind = messageKind(matcher.group(4));
+      return IssueOutput.issue(kind, matcher.group(5))
+          .withFile(file, Integer.parseInt(matcher.group(2)), parseOptionalInt(matcher.group(3)))
           .build();
     }
 
-    private static IssueOutput.Category messageCategory(@Nullable String messageType) {
+    private static Kind messageKind(@Nullable String messageType) {
       if (messageType == null) {
-        return ERROR;
+        return Kind.ERROR;
       }
       switch (Ascii.toLowerCase(messageType)) {
         case "warning":
-          return WARNING;
+          return Kind.WARNING;
         case "note":
         case "message":
         case "context":
         case "info":
-          return NOTE;
+          return Kind.INFO;
         case "error":
         case "fatal error":
         case "internal problem":
-          return ERROR;
+          return Kind.ERROR;
         default: // fall out
       }
-      return ERROR;
+      return Kind.ERROR;
     }
   }
 
@@ -284,9 +305,7 @@ public class BlazeIssueParser {
         message.append(System.lineSeparator()).append(currentLine);
         return ParseResult.output(
             IssueOutput.error(message.toString())
-                .inFile(new File(matcher.group(2)))
-                .onLine(Integer.parseInt(matcher.group(3)))
-                .inColumn(parseOptionalInt(matcher.group(4)))
+                .withFile(new File(matcher.group(2)), Integer.parseInt(matcher.group(3)), parseOptionalInt(matcher.group(4)))
                 .build());
       }
     }
@@ -294,7 +313,7 @@ public class BlazeIssueParser {
 
   static class BuildParser extends SingleLineParser {
     BuildParser() {
-      super("^ERROR: (/.*?BUILD):([0-9]+):([0-9]+): (.*)$");
+      super("^ERROR: " + BAZEL_BUILD_FILES_PATTERN + ":([0-9]+):([0-9]+): (.*)$");
     }
 
     @Nullable
@@ -307,11 +326,7 @@ public class BlazeIssueParser {
       }
       File file = fileFromAbsolutePath(matcher.group(1));
       return IssueOutput.error(matcher.group(4))
-          .inFile(file)
-          .onLine(Integer.parseInt(matcher.group(2)))
-          .inColumn(parseOptionalInt(matcher.group(3)))
-          .consoleHyperlinkRange(
-              union(fileHighlightRange(matcher, 1), matchedTextRange(matcher, 2, 3)))
+          .withFile(file, Integer.parseInt(matcher.group(2)), parseOptionalInt(matcher.group(3)))
           .build();
     }
   }
@@ -325,11 +340,7 @@ public class BlazeIssueParser {
     protected IssueOutput createIssue(Matcher matcher) {
       File file = fileFromAbsolutePath(matcher.group(1));
       return IssueOutput.error(matcher.group(4))
-          .inFile(file)
-          .onLine(Integer.parseInt(matcher.group(2)))
-          .inColumn(parseOptionalInt(matcher.group(3)))
-          .consoleHyperlinkRange(
-              union(fileHighlightRange(matcher, 1), matchedTextRange(matcher, 2, 3)))
+          .withFile(file, Integer.parseInt(matcher.group(2)), parseOptionalInt(matcher.group(3)))
           .build();
     }
   }
@@ -342,8 +353,7 @@ public class BlazeIssueParser {
     @Override
     protected IssueOutput createIssue(Matcher matcher) {
       return IssueOutput.error(matcher.group(2))
-          .inFile(new File(matcher.group(1)))
-          .consoleHyperlinkRange(fileHighlightRange(matcher, 1))
+          .withFile(new File(matcher.group(1)))
           .build();
     }
   }
@@ -360,8 +370,7 @@ public class BlazeIssueParser {
     protected IssueOutput createIssue(Matcher matcher) {
       File file = fileFromTarget(workspaceRoot, matcher.group(1));
       return IssueOutput.error(matcher.group(2))
-          .inFile(file)
-          .consoleHyperlinkRange(fileHighlightRange(matcher, 1))
+          .withFile(file)
           .build();
     }
   }
@@ -391,8 +400,7 @@ public class BlazeIssueParser {
       }
 
       return IssueOutput.error(matcher.group(0))
-          .inFile(file)
-          .consoleHyperlinkRange(fileHighlightRange(matcher, 1))
+          .withFile(file)
           .build();
     }
   }
@@ -421,7 +429,7 @@ public class BlazeIssueParser {
                 return false;
               });
 
-      return IssueOutput.error(matcher.group(0)).inFile(file).build();
+      return IssueOutput.error(matcher.group(0)).withFile(file).build();
     }
   }
 
@@ -430,21 +438,29 @@ public class BlazeIssueParser {
    * parsers. Avoids parsing build/test failure notifications.
    */
   static class GenericErrorParser extends SingleLineParser {
-    static final GenericErrorParser INSTANCE = new GenericErrorParser();
 
-    // Match either specific blacklisted patterns we don't want, or the generic error message we do.
-    // Then throw away the blacklisted matches later.
-    private static final String PATTERN =
-        "^ERROR: (?:"
-            + "(//.+?: Exit [0-9]+\\.)|"
-            + "(.*: Process exited with status [0-9]+\\.)|"
-            + "(build interrupted\\.)|"
-            + "(Couldn't start the build. Unable to run tests.)|"
-            + "(/.*?BUILD:[0-9]+:[0-9]+: Couldn't build file .*)|"
-            + "(.*))$";
+    // Match either specific patterns we don't want, or the generic error message we do.
+    // Then throw away the matches patterns later.
+    private static final ImmutableList<String> COMMON_PATTERNS = ImmutableList.of(
+            "(//.+?: Exit [0-9]+\\.)",
+            "(.*: Process exited with status [0-9]+\\.)",
+            "(build interrupted\\.)",
+            "(Couldn't start the build. Unable to run tests.)",
+            "(" + BAZEL_BUILD_FILES_PATTERN + ":[0-9]+:[0-9]+: Couldn't build file .*)");
 
-    private GenericErrorParser() {
-      super(PATTERN);
+    private static final ImmutableList<String> QUERY_PATTERNS = ImmutableList.of(
+            "(Skipping '//.+': no such target '//.+': target '.*' not declared in package '.*' defined by .+)",
+            "(Skipping '//.+': no targets found beneath '.+')"
+    );
+
+    private static final ImmutableList<String> PATTERN_FOR_DETECTION_QUERY = ImmutableList.copyOf(Streams.concat(COMMON_PATTERNS.stream(), QUERY_PATTERNS.stream()).toList());
+    private static final ImmutableList<String> PATTERN_FOR_SYNC = COMMON_PATTERNS;
+
+    static final GenericErrorParser FOR_SYNC = new GenericErrorParser(PATTERN_FOR_SYNC);
+    static final GenericErrorParser FOR_TARGET_DETECTION_QUERY = new GenericErrorParser(PATTERN_FOR_DETECTION_QUERY);
+
+    private GenericErrorParser(ImmutableList<String> ignoredPatterns) {
+      super("^ERROR: (?:" + String.join("|", ImmutableList.<String>builder().addAll(ignoredPatterns).add("(.*)").build()) + ")$");
     }
 
     @Nullable

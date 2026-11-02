@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2026 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,12 +32,13 @@ import com.intellij.psi.PsiDocumentManager;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.impl.source.PostprocessReformattingAspect;
 import com.intellij.testFramework.EditorTestUtil;
-import com.intellij.testFramework.EditorTestUtil.CaretAndSelectionState;
-import com.intellij.testFramework.EditorTestUtil.CaretInfo;
 import com.intellij.testFramework.EdtTestUtil;
+import com.intellij.testFramework.common.EditorCaretTestUtil.CaretAndSelectionState;
+import com.intellij.testFramework.common.EditorCaretTestUtil.CaretInfo;
 import com.intellij.testFramework.fixtures.CodeInsightTestFixture;
-import java.util.Arrays;
+
 import javax.annotation.Nullable;
+import java.util.Arrays;
 
 /** Helper methods for editor tests. */
 public class EditorTestHelper {
@@ -122,20 +123,6 @@ public class EditorTestHelper {
         .executeCommand(project, () -> testFixture.performEditorAction(action), "", null);
   }
 
-  public void setCaretPosition(Editor editor, int lineNumber, int columnNumber) throws Throwable {
-    final CaretInfo info = new CaretInfo(new LogicalPosition(lineNumber, columnNumber), null);
-    EdtTestUtil.runInEdtAndWait(
-        () ->
-            EditorTestUtil.setCaretsAndSelection(
-                editor, new CaretAndSelectionState(ImmutableList.of(info), null)));
-  }
-
-  public void assertCaretPosition(Editor editor, int lineNumber, int columnNumber) {
-    CaretInfo info = new CaretInfo(new LogicalPosition(lineNumber, columnNumber), null);
-    EditorTestUtil.verifyCaretAndSelectionState(
-        editor, new CaretAndSelectionState(ImmutableList.of(info), null));
-  }
-
   public void replaceStringContents(StringLiteral string, String newStringContents) {
     Runnable renameOp =
         () -> {
@@ -146,5 +133,17 @@ public class EditorTestHelper {
         };
     ApplicationManager.getApplication()
         .runWriteAction(() -> CommandProcessor.getInstance().runUndoTransparentAction(renameOp));
+  }
+
+
+  public void setCaretPosition(Editor editor, int lineNumber, int columnNumber) throws Throwable {
+    final var info = new CaretInfo(new LogicalPosition(lineNumber, columnNumber), null);
+    EdtTestUtil.runInEdtAndWait(() ->
+            EditorTestUtil.setCaretsAndSelection(editor, new CaretAndSelectionState(ImmutableList.of(info), null)));
+  }
+
+  public void assertCaretPosition(Editor editor, int lineNumber, int columnNumber) {
+    final var info = new CaretInfo(new LogicalPosition(lineNumber, columnNumber), null);
+    EditorTestUtil.verifyCaretAndSelectionState(editor, new CaretAndSelectionState(ImmutableList.of(info), null));
   }
 }

@@ -21,6 +21,19 @@ import javax.annotation.Nullable;
 /** Project settings that are set at import time. */
 public final class BlazeImportSettings {
 
+  /** Type of the project based on the IDE configuration when it was created. */
+  public enum ProjectType {
+    ASPECT_SYNC,
+    QUERY_SYNC,
+    /**
+     * UNKNOWN is used when BlazeImportSettings is not available for current project. In most of the
+     * cases, it means the project is not a blaze project, and it does not have BlazeImportSettings.
+     * But rarely, it could because that project is not available, BlazeImportSettings is not
+     * loaded/ fails to load.
+     */
+    UNKNOWN
+  }
+
   private String workspaceRoot = "";
 
   private String projectName = "";
@@ -31,15 +44,11 @@ public final class BlazeImportSettings {
 
   private String projectViewFile;
 
-  // Prototype: import project from project proto generated in advance.
-  // This will only ever be non-null if the prototype is enabled via experiment
-  // "sync.prototype.project.proto.enabled" AND the user selected the option to import from project
-  // proto in the project creation wizard. All prototype functionality should be gated on this
-  // being non-null to ensure prototype code does not cause problems when not enabled.
-  private String projectProtoFile;
-
   // default for backwards compatibility with existing projects
   private BuildSystemName buildSystem = BuildSystemName.Blaze;
+
+  // default for backwards compatibility with existing projects
+  private ProjectType projectType = ProjectType.ASPECT_SYNC;
 
   // Used by bean serialization
   @SuppressWarnings("unused")
@@ -50,24 +59,15 @@ public final class BlazeImportSettings {
       String projectName,
       String projectDataDirectory,
       String projectViewFile,
-      BuildSystemName buildSystemName) {
-    this(workspaceRoot, projectName, projectDataDirectory, projectViewFile, null, buildSystemName);
-  }
-
-  public BlazeImportSettings(
-      String workspaceRoot,
-      String projectName,
-      String projectDataDirectory,
-      String projectViewFile,
-      String projectProtoFile,
-      BuildSystemName buildSystemName) {
+      BuildSystemName buildSystemName,
+      ProjectType projectType) {
     this.workspaceRoot = workspaceRoot;
     this.projectName = projectName;
     this.projectDataDirectory = projectDataDirectory;
     this.locationHash = createLocationHash(projectName);
     this.projectViewFile = projectViewFile;
     this.buildSystem = buildSystemName;
-    this.projectProtoFile = projectProtoFile;
+    this.projectType = projectType;
   }
 
   private static String createLocationHash(String projectName) {
@@ -103,14 +103,16 @@ public final class BlazeImportSettings {
     return projectViewFile;
   }
 
-  public String getProjectProtoFile() {
-    return projectProtoFile;
-  }
-
   /** The build system used for the project. */
   @SuppressWarnings("unused")
   public BuildSystemName getBuildSystem() {
     return buildSystem;
+  }
+
+  /** The type of this project. */
+  @SuppressWarnings("unused")
+  public ProjectType getProjectType() {
+    return projectType;
   }
 
   // Used by bean serialization
@@ -153,5 +155,11 @@ public final class BlazeImportSettings {
   @SuppressWarnings("unused")
   public void setBuildSystem(BuildSystemName buildSystem) {
     this.buildSystem = buildSystem;
+  }
+
+  // Used by bean serialization
+  @SuppressWarnings("unused")
+  public void setProjectType(ProjectType projectType) {
+    this.projectType = projectType;
   }
 }

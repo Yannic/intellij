@@ -23,43 +23,54 @@ import com.google.idea.common.experiments.BoolExperiment;
 import com.intellij.lang.typescript.tsconfig.TypeScriptConfig;
 import com.intellij.lang.typescript.tsconfig.TypeScriptConfigService;
 import com.intellij.lang.typescript.tsconfig.TypeScriptConfigServiceImpl;
-import com.intellij.lang.typescript.tsconfig.TypeScriptConfigsChangedListener;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Condition;
 import com.intellij.openapi.util.ModificationTracker;
 import com.intellij.openapi.vfs.VirtualFile;
+import org.jetbrains.annotations.NotNull;
+
+import javax.annotation.Nullable;
 import java.io.File;
 import java.util.List;
 import java.util.Set;
-import javax.annotation.Nullable;
 
 /**
  * Switches between {@link BlazeTypeScriptConfigServiceImpl} if the project is an applicable blaze
  * project, or {@link TypeScriptConfigServiceImpl} if it isn't.
  */
 class DelegatingTypeScriptConfigService implements TypeScriptConfigService {
+
+  public DelegatingTypeScriptConfigService(Project project) {
+    impl = pickServiceImpl(project);
+  }
+
   private final TypeScriptConfigService impl;
+
+  public TypeScriptConfigService getImpl() {
+    return impl;
+  }
 
   private static final BoolExperiment useBlazeTypeScriptConfig =
       new BoolExperiment("use.blaze.typescript.config", true);
 
-  DelegatingTypeScriptConfigService(Project project) {
-    if (useBlazeTypeScriptConfig.getValue() && Blaze.isBlazeProject(project)) {
-      this.impl = new BlazeTypeScriptConfigServiceImpl(project);
-    } else {
-      this.impl = new TypeScriptConfigServiceImpl(project);
-    }
-  }
 
-  @Override
-  public List<VirtualFile> getConfigFiles() {
-    return impl.getConfigFiles();
+  private static TypeScriptConfigService pickServiceImpl(Project project) {
+    if (useBlazeTypeScriptConfig.getValue() && Blaze.isBlazeProject(project)) {
+      return new BlazeTypeScriptConfigServiceImpl(project);
+    } else {
+      return new TypeScriptConfigServiceImpl(project);
+    }
   }
 
   void update(ImmutableMap<Label, File> tsconfigs) {
     if (impl instanceof BlazeTypeScriptConfigServiceImpl) {
       ((BlazeTypeScriptConfigServiceImpl) impl).update(tsconfigs);
     }
+  }
+
+  @Override
+  public @NotNull IntPredicate getFilterId(@NotNull VirtualFile scope) {
+    return impl.getFilterId(scope);
   }
 
   @Override
@@ -70,11 +81,6 @@ class DelegatingTypeScriptConfigService implements TypeScriptConfigService {
   @Override
   public Condition<VirtualFile> getAccessScope(VirtualFile scope) {
     return impl.getAccessScope(scope);
-  }
-
-  @Override
-  public IntPredicate getFilterId(VirtualFile scope) {
-    return impl.getFilterId(scope);
   }
 
   @Nullable
@@ -111,16 +117,6 @@ class DelegatingTypeScriptConfigService implements TypeScriptConfigService {
       return ((BlazeTypeScriptConfigServiceImpl) impl).getTypeScriptConfigs();
     }
     return ImmutableList.of();
-  }
-
-  @Override
-  public void addChangeListener(TypeScriptConfigsChangedListener listener) {
-    impl.addChangeListener(listener);
-  }
-
-  @Override
-  public ModificationTracker getConfigTracker(@Nullable VirtualFile file) {
-    return impl.getConfigTracker(file);
   }
 
   @Override

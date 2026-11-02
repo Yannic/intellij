@@ -15,178 +15,115 @@
  */
 package com.google.idea.blaze.base.ideinfo;
 
-import com.google.common.base.Objects;
+import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.devtools.intellij.ideinfo.IntellijIdeInfo;
-import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.idea.blaze.base.model.primitives.ExecutionRootPath;
+import javax.annotation.Nullable;
 
 /** Represents toolchain info from a cc_toolchain or cc_toolchain_suite */
-public final class CToolchainIdeInfo implements ProtoWrapper<IntellijIdeInfo.CToolchainIdeInfo> {
+@AutoValue
+public abstract class CToolchainIdeInfo implements ProtoWrapper<IntellijIdeInfo.CToolchainIdeInfo> {
 
-  private final ImmutableList<String> cCompilerOptions;
-  private final ImmutableList<String> cppCompilerOptions;
-  private final ImmutableList<ExecutionRootPath> builtInIncludeDirectories;
-  private final ExecutionRootPath cppExecutable;
-  private final String targetName;
+  public abstract ImmutableList<String> cCompilerOptions();
 
-  private CToolchainIdeInfo(
-      ImmutableList<String> cCompilerOptions,
-      ImmutableList<String> cppCompilerOptions,
-      ImmutableList<ExecutionRootPath> builtInIncludeDirectories,
-      ExecutionRootPath cppExecutable,
-      String targetName) {
-    this.cCompilerOptions = cCompilerOptions;
-    this.cppCompilerOptions = cppCompilerOptions;
-    this.builtInIncludeDirectories = builtInIncludeDirectories;
-    this.cppExecutable = cppExecutable;
-    this.targetName = targetName;
-  }
+  public abstract ImmutableList<String> cppCompilerOptions();
+
+  public abstract ImmutableList<ExecutionRootPath> builtInIncludeDirectories();
+
+  public abstract ExecutionRootPath cCompiler();
+
+  public abstract ExecutionRootPath cppCompiler();
+
+  public abstract ImmutableMap<String, String> cEnvironment();
+
+  public abstract ImmutableMap<String, String> cppEnvironment();
+
+  public abstract String targetName();
+
+  public abstract String compilerName();
+
+  public abstract @Nullable ExecutionRootPath sysroot();
+
+  public abstract @Nullable ArtifactLocation xcodeInfo();
 
   static CToolchainIdeInfo fromProto(IntellijIdeInfo.CToolchainIdeInfo proto) {
-    return new CToolchainIdeInfo(
-        ImmutableList.copyOf(proto.getCOptionList()),
-        ImmutableList.copyOf(proto.getCppOptionList()),
-        ProtoWrapper.map(proto.getBuiltInIncludeDirectoryList(), ExecutionRootPath::fromProto),
-        ExecutionRootPath.fromProto(proto.getCppExecutable()),
-        proto.getTargetName());
+    return CToolchainIdeInfo.builder()
+        .setCCompilerOptions(ImmutableList.copyOf(proto.getCOptionList()))
+        .setCppCompilerOptions(ImmutableList.copyOf(proto.getCppOptionList()))
+        .setBuiltInIncludeDirectories(ProtoWrapper.map(proto.getBuiltInIncludeDirectoryList(), ExecutionRootPath::fromProto))
+        .setCCompiler(ExecutionRootPath.fromProto(proto.getCCompiler()))
+        .setCppCompiler(ExecutionRootPath.fromProto(proto.getCppCompiler()))
+        .setTargetName(proto.getTargetName())
+        .setCompilerName(proto.getCompilerName())
+        .setSysroot(ExecutionRootPath.fromNullableProto(proto.getSysroot()))
+        .setCEnvironment(ImmutableMap.copyOf(proto.getCEnvironmentMap()))
+        .setCppEnvironment(ImmutableMap.copyOf(proto.getCppEnvironmentMap()))
+        .setXcodeInfo(proto.hasXcodeInfo() ? ArtifactLocation.fromProto(proto.getXcodeInfo()) : null)
+        .build();
   }
 
   @Override
   public IntellijIdeInfo.CToolchainIdeInfo toProto() {
-    return IntellijIdeInfo.CToolchainIdeInfo.newBuilder()
-        .addAllCOption(cCompilerOptions)
-        .addAllCppOption(cppCompilerOptions)
-        .addAllBuiltInIncludeDirectory(ProtoWrapper.mapToProtos(builtInIncludeDirectories))
-        .setCppExecutable(cppExecutable.toProto())
-        .setTargetName(targetName)
-        .build();
-  }
+    final var builder = IntellijIdeInfo.CToolchainIdeInfo.newBuilder()
+        .addAllCOption(cCompilerOptions())
+        .addAllCppOption(cppCompilerOptions())
+        .addAllBuiltInIncludeDirectory(ProtoWrapper.mapToProtos(builtInIncludeDirectories()))
+        .setCCompiler(cCompiler().toProto())
+        .setCppCompiler(cppCompiler().toProto())
+        .setTargetName(targetName())
+        .setCompilerName(compilerName())
+        .putAllCEnvironment(cEnvironment())
+        .putAllCppEnvironment(cppEnvironment());
 
-  public ImmutableList<String> getcCompilerOptions() {
-    return cCompilerOptions;
-  }
+    final var sysroot = sysroot();
+    if (sysroot != null) {
+      builder.setSysroot(sysroot.toProto());
+    }
 
-  public ImmutableList<String> getCppCompilerOptions() {
-    return cppCompilerOptions;
-  }
+    final var xcodeInfo = xcodeInfo();
+    if (xcodeInfo != null) {
+      builder.setXcodeInfo(xcodeInfo.toProto());
+    }
 
-  public ImmutableList<ExecutionRootPath> getBuiltInIncludeDirectories() {
-    return builtInIncludeDirectories;
-  }
-
-  public ExecutionRootPath getCppExecutable() {
-    return cppExecutable;
-  }
-
-  public String getTargetName() {
-    return targetName;
+    return builder.build();
   }
 
   public static Builder builder() {
-    return new Builder();
+    return new AutoValue_CToolchainIdeInfo.Builder()
+        .setCEnvironment(ImmutableMap.of())
+        .setCppEnvironment(ImmutableMap.of());
   }
 
-  /** Builder for c toolchain */
-  public static class Builder {
-    private final ImmutableList.Builder<String> cCompilerOptions = ImmutableList.builder();
-    private final ImmutableList.Builder<String> cppCompilerOptions = ImmutableList.builder();
+  /**
+   * Builder for c toolchain
+   */
+  @AutoValue.Builder
+  public abstract static class Builder {
 
-    private final ImmutableList.Builder<ExecutionRootPath> builtInIncludeDirectories =
-        ImmutableList.builder();
+    public abstract Builder setCCompilerOptions(ImmutableList<String> value);
 
-    ExecutionRootPath cppExecutable;
+    public abstract Builder setCppCompilerOptions(ImmutableList<String> value);
 
-    String targetName = "";
+    public abstract Builder setBuiltInIncludeDirectories(ImmutableList<ExecutionRootPath> value);
 
-    @CanIgnoreReturnValue
-    public Builder addCCompilerOptions(Iterable<String> cCompilerOptions) {
-      this.cCompilerOptions.addAll(cCompilerOptions);
-      return this;
-    }
+    public abstract Builder setCCompiler(ExecutionRootPath value);
 
-    @CanIgnoreReturnValue
-    public Builder addCppCompilerOptions(Iterable<String> cppCompilerOptions) {
-      this.cppCompilerOptions.addAll(cppCompilerOptions);
-      return this;
-    }
+    public abstract Builder setCppCompiler(ExecutionRootPath value);
 
-    @CanIgnoreReturnValue
-    public Builder addBuiltInIncludeDirectories(
-        Iterable<ExecutionRootPath> builtInIncludeDirectories) {
-      this.builtInIncludeDirectories.addAll(builtInIncludeDirectories);
-      return this;
-    }
+    public abstract Builder setTargetName(String value);
 
-    @CanIgnoreReturnValue
-    public Builder setCppExecutable(ExecutionRootPath cppExecutable) {
-      this.cppExecutable = cppExecutable;
-      return this;
-    }
+    public abstract Builder setCompilerName(String value);
 
-    @CanIgnoreReturnValue
-    public Builder setTargetName(String targetName) {
-      this.targetName = targetName;
-      return this;
-    }
+    public abstract Builder setSysroot(@Nullable ExecutionRootPath value);
 
-    public CToolchainIdeInfo build() {
-      return new CToolchainIdeInfo(
-          cCompilerOptions.build(),
-          cppCompilerOptions.build(),
-          builtInIncludeDirectories.build(),
-          cppExecutable,
-          targetName);
-    }
-  }
+    public abstract Builder setCEnvironment(ImmutableMap<String, String> value);
 
-  @Override
-  public String toString() {
-    return "CToolchainIdeInfo{"
-        + "\n"
-        + "  cCompilerOptions="
-        + getcCompilerOptions()
-        + "\n"
-        + "  cppCompilerOptions="
-        + getCppCompilerOptions()
-        + "\n"
-        + "  builtInIncludeDirectories="
-        + getBuiltInIncludeDirectories()
-        + "\n"
-        + "  cppExecutable='"
-        + getCppExecutable()
-        + '\''
-        + "\n"
-        + "  targetName='"
-        + getTargetName()
-        + '\''
-        + "\n"
-        + '}';
-  }
+    public abstract Builder setCppEnvironment(ImmutableMap<String, String> value);
 
-  @Override
-  public boolean equals(Object o) {
-    if (this == o) {
-      return true;
-    }
-    if (o == null || getClass() != o.getClass()) {
-      return false;
-    }
-    CToolchainIdeInfo that = (CToolchainIdeInfo) o;
-    return Objects.equal(getcCompilerOptions(), that.getcCompilerOptions())
-        && Objects.equal(getCppCompilerOptions(), that.getCppCompilerOptions())
-        && Objects.equal(getBuiltInIncludeDirectories(), that.getBuiltInIncludeDirectories())
-        && Objects.equal(getCppExecutable(), that.getCppExecutable())
-        && Objects.equal(getTargetName(), that.getTargetName());
-  }
+    public abstract Builder setXcodeInfo(@Nullable ArtifactLocation value);
 
-  @Override
-  public int hashCode() {
-    return Objects.hashCode(
-        getcCompilerOptions(),
-        getCppCompilerOptions(),
-        getBuiltInIncludeDirectories(),
-        getCppExecutable(),
-        getTargetName());
+    public abstract CToolchainIdeInfo build();
   }
 }

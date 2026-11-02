@@ -31,13 +31,10 @@ public class PyLibraryTest extends BazelIntellijAspectTest {
   public void testPyLibrary() throws Exception {
     IntellijAspectTestFixture testFixture = loadTestFixture(":simple_fixture");
     TargetIdeInfo target = findTarget(testFixture, ":simple");
-    assertThat(target.getKindString()).isEqualTo("py_library");
+    assertThat(target.getKind()).isEqualTo("py_library");
     assertThat(target.hasPyIdeInfo()).isTrue();
-    assertThat(target.hasJavaIdeInfo()).isFalse();
     assertThat(target.hasCIdeInfo()).isFalse();
-    assertThat(target.hasAndroidIdeInfo()).isFalse();
-
-    assertThat(relativePathsForArtifacts(target.getPyIdeInfo().getSourcesList()))
+    assertThat(relativePathsForArtifacts(target.getSrcsList()))
         .containsExactly(testRelative("simple.py"));
 
     assertThat(getOutputGroupFiles(testFixture, "intellij-info-py"))

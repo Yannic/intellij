@@ -40,8 +40,8 @@ import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiFile;
 import com.intellij.testFramework.MapDataContext;
 import com.intellij.testFramework.ServiceContainerUtil;
-import com.intellij.ui.CoreIconManager;
 import com.intellij.ui.IconManager;
+import com.intellij.ui.icons.CoreIconManager;
 import java.util.Arrays;
 import javax.annotation.Nullable;
 import org.junit.After;
@@ -71,15 +71,14 @@ public class BlazeRunConfigurationProducerTestCase extends BlazeIntegrationTestC
 
     // IntelliJ will use a dummy icon manager that returns the same exact icon.
     // This will cause uniqueness issues for gutter icons.
-    IconManager.activate(new CoreIconManager());
+    IconManager.Companion.activate(new CoreIconManager());
   }
 
   @After
   public final void doTeardown() {
     ServiceContainerUtil.registerServiceInstance(
         ApplicationManager.getApplication(), DataManager.class, defaultDataManager);
-
-    IconManager.deactivate();
+    IconManager.Companion.deactivate();
   }
 
   protected PsiFile createAndIndexFile(WorkspacePath path, String... contents) throws Throwable {

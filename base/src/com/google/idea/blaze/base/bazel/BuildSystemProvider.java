@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2026 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,16 +19,17 @@ import com.google.common.collect.ImmutableList;
 import com.google.idea.blaze.base.io.FileOperationProvider;
 import com.google.idea.blaze.base.lang.buildfile.language.semantics.RuleDefinition;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
-import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.settings.BuildSystemName;
 import com.intellij.openapi.extensions.ExtensionPointName;
 import com.intellij.openapi.fileTypes.ExactFileNameMatcher;
 import com.intellij.openapi.fileTypes.ExtensionFileNameMatcher;
 import com.intellij.openapi.fileTypes.FileNameMatcher;
+import com.intellij.openapi.fileTypes.WildcardFileNameMatcher;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.VirtualFile;
-import java.io.File;
+
 import javax.annotation.Nullable;
+import java.io.File;
 
 /**
  * Extension points specify the build systems supported by this plugin.<br>
@@ -88,7 +89,7 @@ public interface BuildSystemProvider {
    */
   @Deprecated
   default String getBinaryPath(Project project) {
-    return getBuildSystem().getBuildInvoker(project, BlazeContext.create()).getBinaryPath();
+    return getBuildSystem().getBuildInvoker(project).getBinaryPath();
   }
 
   /**
@@ -97,7 +98,7 @@ public interface BuildSystemProvider {
    */
   @Deprecated
   default String getSyncBinaryPath(Project project) {
-    return getBuildSystem().getBuildInvoker(project, BlazeContext.create()).getBinaryPath();
+    return getBuildSystem().getBuildInvoker(project).getBinaryPath();
   }
 
   /**
@@ -139,6 +140,12 @@ public interface BuildSystemProvider {
    * both BUILD and BUILD.bazel exist in a directory, bazel ignores the former).
    */
   ImmutableList<String> possibleBuildFileNames();
+
+  /** The MODULE.bazel file in Bazel repository root if bzlmod is used. */
+  ImmutableList<String> possibleModuleFileNames();
+
+  /** Files allowed to be included from MODULE files. */
+  ImmutableList<String> possibleModuleFileNameWildcards();
 
   /** The WORKSPACE file in the repository root. */
   ImmutableList<String> possibleWorkspaceFileNames();
@@ -190,6 +197,8 @@ public interface BuildSystemProvider {
     possibleBuildFileNames().forEach(s -> list.add(new ExactFileNameMatcher(s)));
     possibleWorkspaceFileNames().forEach(s -> list.add(new ExactFileNameMatcher(s)));
     possibleFileExtensions().forEach(s -> list.add(new ExtensionFileNameMatcher(s)));
+    possibleModuleFileNames().forEach(s -> list.add(new ExactFileNameMatcher(s)));
+    possibleModuleFileNameWildcards().forEach(s -> list.add(new WildcardFileNameMatcher(s)));
     return list.build();
   }
 

@@ -15,10 +15,17 @@
  */
 package com.google.idea.blaze.base.command.buildresult;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+
+import com.google.common.collect.ImmutableList;
 import com.google.devtools.intellij.model.ProjectData;
 import com.google.idea.blaze.base.ideinfo.ProtoWrapper;
+import com.google.idea.blaze.base.settings.BuildSystemName;
+import com.google.idea.blaze.common.artifact.BlazeArtifact;
+import com.google.idea.blaze.common.artifact.OutputArtifact;
 import com.intellij.openapi.extensions.ExtensionPointName;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Objects;
 import javax.annotation.Nullable;
 
@@ -27,20 +34,31 @@ public interface RemoteOutputArtifact
     extends OutputArtifact, ProtoWrapper<ProjectData.OutputArtifact> {
 
   @Nullable
-  static RemoteOutputArtifact fromProto(ProjectData.OutputArtifact proto) {
+  static RemoteOutputArtifact fromProto(BuildSystemName buildSystemName, ProjectData.OutputArtifact proto) {
     return Arrays.stream(Parser.EP_NAME.getExtensions())
-        .map(p -> p.parseProto(proto))
+        .map(p -> p.parseProto(buildSystemName, proto))
         .filter(Objects::nonNull)
         .findFirst()
         .orElse(null);
   }
 
+  static ImmutableList<RemoteOutputArtifact> getRemoteArtifacts(
+      Collection<? extends BlazeArtifact> artifacts) {
+    return artifacts.stream()
+        .filter(a -> a instanceof RemoteOutputArtifact)
+        .map(a -> ((RemoteOutputArtifact) a))
+        .collect(toImmutableList());
+  }
+
   @Override
   default ProjectData.OutputArtifact toProto() {
     return ProjectData.OutputArtifact.newBuilder()
-        .setRelativePath(getRelativePath())
+        .setArtifactPath(getArtifactPath().toString())
+        .setPrefixLengthPlusOne(getArtifactPathPrefixLength() + 1)
         .setId(getHashId())
         .setSyncStartTimeMillis(getSyncTimeMillis())
+        .setFileLength(getLength())
+        .setDigest(getDigest())
         .build();
   }
 
@@ -63,6 +81,6 @@ public interface RemoteOutputArtifact
         ExtensionPointName.create("com.google.idea.blaze.RemoteOutputArtifactParser");
 
     @Nullable
-    RemoteOutputArtifact parseProto(ProjectData.OutputArtifact proto);
+    RemoteOutputArtifact parseProto(BuildSystemName buildSystemName, ProjectData.OutputArtifact proto);
   }
 }

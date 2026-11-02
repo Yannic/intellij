@@ -17,32 +17,80 @@ package com.google.idea.blaze.aspect.cpp.coptsmakevars;
 
 import static com.google.common.truth.Truth.assertThat;
 
-import com.google.devtools.intellij.IntellijAspectTestFixtureOuterClass.IntellijAspectTestFixture;
+import com.google.common.collect.ImmutableList;
 import com.google.devtools.intellij.ideinfo.IntellijIdeInfo.CIdeInfo;
-import com.google.devtools.intellij.ideinfo.IntellijIdeInfo.TargetIdeInfo;
 import com.google.idea.blaze.BazelIntellijAspectTest;
+import java.io.IOException;
+import java.util.List;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/** Tests copts make vars substitution */
 @RunWith(JUnit4.class)
 public class CoptsMakeVarsTest extends BazelIntellijAspectTest {
-  @Test
-  public void testCoptsPrefinedMakeVars() throws Exception {
-    IntellijAspectTestFixture testFixture = loadTestFixture(":simple_fixture");
-    TargetIdeInfo target = findTarget(testFixture, ":simple_prefined");
-    assertThat(target.getKindString()).isEqualTo("cc_binary");
 
+  private CIdeInfo getCIdeInfo(String targetName) throws IOException {
+    final var testFixture = loadTestFixture(":aspect_fixture");
+    final var target = findTarget(testFixture, targetName);
+    assertThat(target.getKind()).isEqualTo("cc_binary");
     assertThat(target.hasCIdeInfo()).isTrue();
-    assertThat(target.hasJavaIdeInfo()).isFalse();
-    assertThat(target.hasAndroidIdeInfo()).isFalse();
-    CIdeInfo cTargetIdeInfo = target.getCIdeInfo();
 
-    assertThat(cTargetIdeInfo.getTargetCoptList()).hasSize(2);
+    return target.getCIdeInfo();
+  }
+
+  private ImmutableList<List<String>> getAllCopts(CIdeInfo ideInfo) {
+    return ImmutableList.of(
+        ideInfo.getRuleContext().getCoptsList(),
+        ideInfo.getRuleContext().getConlyoptsList(),
+        ideInfo.getRuleContext().getCxxoptsList()
+    );
+  }
+
+  @Test
+  public void testCoptsPrefinedMakeVars() throws IOException {
+    final var ideInfo = getCIdeInfo(":simple_prefined");
+    assertThat(ideInfo.getRuleContext().getCoptsList()).hasSize(2);
+
     // These predefined variables' values are dependent on build system and configuration.
-    assertThat(cTargetIdeInfo.getTargetCoptList().get(0))
-        .containsMatch("^-DPREFINED_BINDIR=(blaze|bazel)-out/[-0-9a-z]+/bin$");
-    assertThat(cTargetIdeInfo.getTargetCoptList().get(1)).isEqualTo("-DPREFINED_BINDIR2=$(BINDIR)");
+    for (final var copts : getAllCopts(ideInfo)) {
+      assertThat(copts.get(0)).containsMatch("^-DPREFINED_BINDIR=bazel-out/[0-9a-z_-]+/bin$");
+      assertThat(copts.get(1)).isEqualTo("-DPREFINED_BINDIR2=$(BINDIR)");
+    }
+  }
+
+  @Test
+  public void testCoptsEmptyVariable() throws IOException {
+    final var ideInfo = getCIdeInfo(":empty_variable");
+
+    for (final var copts : getAllCopts(ideInfo)) {
+      assertThat(copts).hasSize(1);
+      assertThat(copts).contains("-Wall");
+    }
+  }
+
+  @Test
+  public void testCoptsMakeVars() throws IOException {
+    final var ideInfo = getCIdeInfo(":simple_make_var");
+    assertThat(ideInfo.getRuleContext().getCoptsList()).hasSize(4);
+
+    for (final var copts : getAllCopts(ideInfo)) {
+      assertThat(copts.get(0)).isEqualTo(
+          "-DEXECPATH=\"aspect/testing/tests/src/com/google/idea/blaze/aspect/cpp/coptsmakevars/simple/simple.cc\"");
+      assertThat(copts.get(1)).isEqualTo(
+          "-DROOTPATH=\"aspect/testing/tests/src/com/google/idea/blaze/aspect/cpp/coptsmakevars/simple/simple.cc\"");
+      assertThat(copts.get(2)).isEqualTo(
+          "-DRLOCATIONPATH=\"_main/aspect/testing/tests/src/com/google/idea/blaze/aspect/cpp/coptsmakevars/simple/simple.cc\"");
+      assertThat(copts.get(3)).isEqualTo(
+          "-DLOCATION=\"aspect/testing/tests/src/com/google/idea/blaze/aspect/cpp/coptsmakevars/simple/simple.cc\"");
+    }
+  }
+
+  @Test
+  public void testDifferentCopts() throws IOException {
+    final var ideInfo = getCIdeInfo(":simple_different_copts");
+
+    assertThat(ideInfo.getRuleContext().getCoptsList()).containsExactly("-DCOPTS");
+    assertThat(ideInfo.getRuleContext().getConlyoptsList()).containsExactly("-DCONLYOPTS");
+    assertThat(ideInfo.getRuleContext().getCxxoptsList()).containsExactly("-DCXXOPTS");
   }
 }

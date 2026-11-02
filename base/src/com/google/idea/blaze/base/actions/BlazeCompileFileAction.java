@@ -30,17 +30,31 @@ import java.io.File;
 class BlazeCompileFileAction extends BlazeProjectAction {
 
   @Override
+  protected QuerySyncStatus querySyncSupport() {
+    return QuerySyncStatus.SUPPORTED;
+  }
+
+  @Override
   protected void updateForBlazeProject(Project project, AnActionEvent e) {
     ActionPresentationHelper.of(e)
-        .disableIf(getTargets(e).isEmpty())
+        .disableIf(!isEnabled(project, e))
         .setTextWithSubject("Compile File", "Compile %s", e.getData(CommonDataKeys.VIRTUAL_FILE))
         .disableWithoutSubject()
         .commit();
   }
 
+  private boolean isEnabled(Project project, AnActionEvent e) {
+    return !getTargets(e).isEmpty();
+  }
+
   @Override
   protected void actionPerformedInBlazeProject(Project project, AnActionEvent e) {
-    BlazeBuildService.getInstance(project).buildFile(getFileName(e), getTargets(e));
+    VirtualFile virtualFile = e.getData(CommonDataKeys.VIRTUAL_FILE);
+    if (virtualFile == null) {
+      return;
+    }
+
+    BlazeBuildService.getInstance(project).buildFile(virtualFile.getName(), getTargets(e));
   }
 
   private ImmutableCollection<Label> getTargets(AnActionEvent e) {
@@ -51,10 +65,5 @@ class BlazeCompileFileAction extends BlazeProjectAction {
           .getTargetsToBuildForSourceFile(new File(virtualFile.getPath()));
     }
     return ImmutableList.of();
-  }
-
-  private static String getFileName(AnActionEvent e) {
-    VirtualFile virtualFile = e.getData(CommonDataKeys.VIRTUAL_FILE);
-    return virtualFile == null ? null : virtualFile.getName();
   }
 }

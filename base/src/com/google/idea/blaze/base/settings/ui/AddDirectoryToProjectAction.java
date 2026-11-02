@@ -77,6 +77,11 @@ public final class AddDirectoryToProjectAction extends BlazeProjectAction {
           + "resolve correctly.";
 
   @Override
+  protected QuerySyncStatus querySyncSupport() {
+    return QuerySyncStatus.HIDDEN;
+  }
+
+  @Override
   protected void actionPerformedInBlazeProject(Project project, AnActionEvent e) {
     runAction(project, null);
   }
@@ -99,7 +104,7 @@ public final class AddDirectoryToProjectAction extends BlazeProjectAction {
     // the dialog entirely
     OpenBlazeWorkspaceFileActionDialog dialog =
         new OpenBlazeWorkspaceFileActionDialog(
-            project, projectView, projectData.getWorkspacePathResolver());
+            project, projectView, projectData.workspacePathResolver());
     if (fixedDirectory != null) {
       dialog.fileTextField.getField().setText(fixedDirectory.getAbsolutePath());
       dialog.fileTextField.getField().setEnabled(false);

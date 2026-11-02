@@ -17,8 +17,15 @@ package com.google.idea.blaze.cpp;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.Arrays.stream;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
+
+import com.intellij.mock.MockProject;
+import kotlinx.coroutines.GlobalScope;
+import org.mockito.MockedStatic;
 
 import com.google.common.collect.ImmutableList;
 import com.google.idea.blaze.base.BlazeTestCase;
@@ -36,9 +43,11 @@ import com.google.idea.blaze.base.io.FileOperationProvider;
 import com.google.idea.blaze.base.io.VirtualFileSystemProvider;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.MockBlazeProjectDataBuilder;
+import com.google.idea.blaze.base.model.MockBlazeProjectDataManager;
 import com.google.idea.blaze.base.model.primitives.ExecutionRootPath;
 import com.google.idea.blaze.base.model.primitives.Kind;
-import com.google.idea.blaze.base.model.primitives.Kind.Provider;
+import com.google.idea.blaze.cpp.environment.EnvironmentProcessor;
+import com.google.idea.blaze.cpp.environment.ProcSelfCwdEnvironmentProcessor;
 import com.google.idea.blaze.base.model.primitives.TargetExpression;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
@@ -52,37 +61,140 @@ import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.ErrorCollector;
 import com.google.idea.blaze.base.scope.output.IssueOutput;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
+import com.google.idea.blaze.base.sync.SyncCache;
+import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
+import com.google.idea.blaze.base.sync.workspace.WorkspaceHelper;
 import com.google.idea.common.experiments.ExperimentService;
 import com.google.idea.common.experiments.MockExperimentService;
 import com.intellij.openapi.extensions.impl.ExtensionPointImpl;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.impl.ProgressManagerImpl;
+import com.intellij.openapi.util.registry.Registry;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileManager;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import org.mockito.Mockito;
 
 /** Tests for {@link BlazeConfigurationResolver}. */
 @RunWith(JUnit4.class)
 public class BlazeConfigurationResolverTest extends BlazeTestCase {
+
+  private static final String DEVELOPER_DIR = "/Applications/Xcode.app/Contents/Developer";
+  private static final String SDK_ROOT = DEVELOPER_DIR + "/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk";
+
+  // default execution root of MockBlazeProjectDataBuilder, does not exist and is therefore also the canonical one
+  private static final String EXECUTION_ROOT = "/usr/workspace/1234/execroot/_main";
+
+  private BlazeCompilerSettings resolveToolchainOptions(CToolchainIdeInfo.Builder toolchain) {
+    final var targetMap = TargetMapBuilder.builder()
+        .addTarget(TargetIdeInfo.builder()
+            .setLabel("//:toolchain")
+            .setKind(CppBlazeRules.RuleTypes.CC_TOOLCHAIN.getKind())
+            .setCToolchainInfo(toolchain.setTargetName("toolchain")))
+        .addTarget(createCcTarget(
+            "//foo/bar:binary",
+            CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+            ImmutableList.of(src("foo/bar/binary.cc")),
+            "//:toolchain"))
+        .build();
+
+    final var projectView = projectView(directories("foo/bar"), targets("//foo/bar:binary"));
+    computeResolverResult(projectView, targetMap);
+    errorCollector.assertNoIssues();
+
+    return getCompilerSettingsForTarget("//foo/bar:binary");
+  }
+
+  @Test
+  public void expandsXcodePlaceholdersInOptions() {
+    xcodeSettingsProvider.setXcodeSettings(XcodeCompilerSettings.create(Path.of(DEVELOPER_DIR), Path.of(SDK_ROOT)));
+
+    final var settings = resolveToolchainOptions(createToolchainIdeInfoBuilder()
+        .setCCompilerOptions(ImmutableList.of(
+            "-isysroot",
+            "__BAZEL_XCODE_SDKROOT__",
+            "-F__BAZEL_XCODE_SDKROOT__/System/Library/Frameworks"))
+        .setCppCompilerOptions(ImmutableList.of("-B__BAZEL_XCODE_DEVELOPER_DIR__/usr/bin")));
+
+    assertThat(settings.cSwitches())
+        .containsExactly("-isysroot", SDK_ROOT, "-F" + SDK_ROOT + "/System/Library/Frameworks")
+        .inOrder();
+    assertThat(settings.cppSwitches()).containsExactly("-B" + DEVELOPER_DIR + "/usr/bin");
+  }
+
+  @Test
+  public void expandsExecutionRootPlaceholdersInOptions() {
+    xcodeSettingsProvider.setXcodeSettings(XcodeCompilerSettings.create(Path.of(DEVELOPER_DIR), Path.of(SDK_ROOT)));
+
+    // the flags of the apple_support toolchain, see toolchain/BUILD and toolchain/coverage/BUILD
+    final var settings = resolveToolchainOptions(createToolchainIdeInfoBuilder()
+        .setCCompilerOptions(ImmutableList.of(
+            "-fdebug-prefix-map=__BAZEL_EXECUTION_ROOT__=.",
+            "-fdebug-prefix-map=__BAZEL_XCODE_DEVELOPER_DIR__=/PLACEHOLDER_DEVELOPER_DIR"))
+        .setCppCompilerOptions(ImmutableList.of(
+            "-fcoverage-prefix-map=__BAZEL_EXECUTION_ROOT__=__BAZEL_EXECUTION_ROOT_CANONICAL__")));
+
+    assertThat(settings.cSwitches())
+        .containsExactly(
+            "-fdebug-prefix-map=" + EXECUTION_ROOT + "=.",
+            "-fdebug-prefix-map=" + DEVELOPER_DIR + "=/PLACEHOLDER_DEVELOPER_DIR")
+        .inOrder();
+    assertThat(settings.cppSwitches())
+        .containsExactly("-fcoverage-prefix-map=" + EXECUTION_ROOT + "=" + EXECUTION_ROOT);
+  }
+
+  @Test
+  public void leavesXcodePlaceholdersWithoutXcodeSettings() {
+    final var settings = resolveToolchainOptions(createToolchainIdeInfoBuilder()
+        .setCCompilerOptions(ImmutableList.of(
+            "-isysroot",
+            "__BAZEL_XCODE_SDKROOT__",
+            "-fdebug-prefix-map=__BAZEL_EXECUTION_ROOT__=.")));
+
+    assertThat(settings.cSwitches())
+        .containsExactly("-isysroot", "__BAZEL_XCODE_SDKROOT__", "-fdebug-prefix-map=" + EXECUTION_ROOT + "=.")
+        .inOrder();
+    assertThat(settings.environment()).doesNotContainKey("DEVELOPER_DIR");
+    assertThat(settings.environment()).doesNotContainKey("SDKROOT");
+  }
+
+  private static final ArtifactLocation XCODE_INFO = ArtifactLocation.builder()
+      .setRootPath("bazel-out/darwin_arm64-fastbuild/bin")
+      .setRelativePath("toolchain.intellij-generated-1234")
+      .setIsSource(false)
+      .build();
+
   private final BlazeContext context = BlazeContext.create();
   private final ErrorCollector errorCollector = new ErrorCollector();
   private final WorkspaceRoot workspaceRoot = new WorkspaceRoot(new File("/root"));
 
+  @Rule
+  public final TemporaryFolder tempFolder = new TemporaryFolder();
+
   private BlazeConfigurationResolver resolver;
   private BlazeConfigurationResolverResult resolverResult;
   private MockCompilerVersionChecker compilerVersionChecker;
+  private MockXcodeSettingsProvider xcodeSettingsProvider;
   private LocalFileSystem mockFileSystem;
+  private FileOperationProvider spyFileOperationProvider;
 
   @Override
   protected void initTest(Container applicationServices, Container projectServices) {
@@ -92,28 +204,42 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
     compilerVersionChecker = new MockCompilerVersionChecker("1234");
     applicationServices.register(CompilerVersionChecker.class, compilerVersionChecker);
     applicationServices.register(ProgressManager.class, new ProgressManagerImpl());
-    applicationServices.register(CompilerWrapperProvider.class, new CompilerWrapperProviderImpl());
+    xcodeSettingsProvider = new MockXcodeSettingsProvider();
+    projectServices.register(XcodeCompilerSettingsProvider.class, xcodeSettingsProvider);
     applicationServices.register(VirtualFileManager.class, mock(VirtualFileManager.class));
-    applicationServices.register(FileOperationProvider.class, new FileOperationProvider());
+    spyFileOperationProvider = spy(FileOperationProvider.class);
+    applicationServices.register(FileOperationProvider.class, spyFileOperationProvider);
     mockFileSystem = mock(LocalFileSystem.class);
     applicationServices.register(
         VirtualFileSystemProvider.class, mock(VirtualFileSystemProvider.class));
     when(VirtualFileSystemProvider.getInstance().getSystem()).thenReturn(mockFileSystem);
 
-    ExtensionPointImpl<Provider> ep =
-        registerExtensionPoint(Kind.Provider.EP_NAME, Kind.Provider.class);
+    Registry.get(BlazeConfigurationResolver.SYNC_EXTERNAL_TARGETS_FROM_DIRECTORIES_KEY).setValue(true);
+
+    final var ep = registerExtensionPoint(Kind.Provider.EP_NAME, Kind.Provider.class);
     ep.registerExtension(new CppBlazeRules());
     applicationServices.register(Kind.ApplicationState.class, new Kind.ApplicationState());
+
+    registerExtensionPoint(EnvironmentProcessor.EP_NAME, EnvironmentProcessor.class)
+        .registerExtension(new ProcSelfCwdEnvironmentProcessor());
 
     projectServices.register(
         BlazeImportSettingsManager.class, new BlazeImportSettingsManager(project));
     BlazeImportSettingsManager.getInstance(getProject())
         .setImportSettings(
             new BlazeImportSettings(
-                "", "", "", "", getBuildSystemProvider().getBuildSystem().getName()));
+                "",
+                "",
+                "",
+                "",
+                getBuildSystemProvider().getBuildSystem().getName(),
+                ProjectType.ASPECT_SYNC));
 
-    registerExtensionPoint(
-        BlazeCompilerFlagsProcessor.EP_NAME, BlazeCompilerFlagsProcessor.Provider.class);
+    BlazeProjectDataManager mockProjectDataManager =
+        new MockBlazeProjectDataManager(MockBlazeProjectDataBuilder.builder(workspaceRoot).build());
+    projectServices.register(BlazeProjectDataManager.class, mockProjectDataManager);
+    projectServices.register(SyncCache.class, new SyncCache(project, GlobalScope.INSTANCE));
+    projectServices.register(HeaderRootTrimmer.class, new HeaderRootTrimmerMock());
 
     context.addOutputSink(IssueOutput.class, errorCollector);
 
@@ -124,6 +250,20 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
   @Override
   protected BuildSystemProvider createBuildSystemProvider() {
     return new BazelBuildSystemProvider();
+  }
+
+  private static CToolchainIdeInfo.Builder createToolchainIdeInfoBuilder() {
+    return createToolchainIdeInfoBuilder("cc");
+  }
+
+  private static CToolchainIdeInfo.Builder createToolchainIdeInfoBuilder(String compiler) {
+    return CToolchainIdeInfo.builder()
+        .setCCompiler(ExecutionRootPath.create(compiler))
+        .setCppCompiler(ExecutionRootPath.create(compiler))
+        .setCompilerName(compiler)
+        .setBuiltInIncludeDirectories(ImmutableList.of())
+        .setCCompilerOptions(ImmutableList.of())
+        .setCppCompilerOptions(ImmutableList.of());
   }
 
   @Test
@@ -262,8 +402,7 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
   @Test
   public void withCcToolchainSuite_testSingleSourceCcBinaryTarget() {
     ProjectView projectView = projectView(directories("foo/bar"), targets("//foo/bar:binary"));
-    CToolchainIdeInfo.Builder cToolchainIdeInfoBuilder =
-        CToolchainIdeInfo.builder().setCppExecutable(new ExecutionRootPath("cc"));
+    CToolchainIdeInfo.Builder cToolchainIdeInfoBuilder = createToolchainIdeInfoBuilder();
     TargetIdeInfo ccTarget =
         createCcTarget(
                 "//foo/bar:binary",
@@ -277,7 +416,7 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
             .addTarget(ccTarget)
             .build();
     assertThatResolving(projectView, targetMap)
-        .producesCToolchainIdeInfoForTarget("//foo/bar:binary", cToolchainIdeInfoBuilder.build());
+        .producesCompilerSettingsForTarget("//foo/bar:binary", cToolchainIdeInfoBuilder.build());
   }
 
   // Java cc_library depends directly on a cc_toolchain_suite target. Should use the
@@ -285,8 +424,7 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
   @Test
   public void withCcToolchainSuite_testSingleSourceCcLibraryTarget() {
     ProjectView projectView = projectView(directories("foo/bar"), targets("//foo/bar:library"));
-    CToolchainIdeInfo.Builder cToolchainIdeInfoBuilder =
-        CToolchainIdeInfo.builder().setCppExecutable(new ExecutionRootPath("cc"));
+    CToolchainIdeInfo.Builder cToolchainIdeInfoBuilder = createToolchainIdeInfoBuilder();
     TargetIdeInfo ccTarget =
         createCcTarget(
                 "//foo/bar:library",
@@ -301,7 +439,7 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
             .addTarget(ccTarget)
             .build();
     assertThatResolving(projectView, targetMap)
-        .producesCToolchainIdeInfoForTarget("//foo/bar:library", cToolchainIdeInfoBuilder.build());
+        .producesCompilerSettingsForTarget("//foo/bar:library", cToolchainIdeInfoBuilder.build());
   }
 
   // Starlark cc_library depends on an intermediate cc_toolchain_alias target which has a direct
@@ -313,12 +451,8 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
     // The CToolchainIdeInfo extracted from cc_toolchain_alias and cc_toolchain_suite should be
     // identical, but we differentiate them here to verify that the CToolchainIdeInfo from
     // cc_toolchain_alias target is used to build the toolchainLookupMap.
-    CToolchainIdeInfo.Builder cToolchainIdeInfoBuilderSuite =
-        CToolchainIdeInfo.builder().setCppExecutable(new ExecutionRootPath("cc"));
-    CToolchainIdeInfo.Builder cToolchainIdeInfoBuilderAlias =
-        CToolchainIdeInfo.builder()
-            .setCppExecutable(new ExecutionRootPath("cc"))
-            .setTargetName("toolchain_alias");
+    CToolchainIdeInfo.Builder cToolchainIdeInfoBuilderSuite = createToolchainIdeInfoBuilder("suite-cc");
+    CToolchainIdeInfo.Builder cToolchainIdeInfoBuilderAlias = createToolchainIdeInfoBuilder("alias-cc").setTargetName("toolchain_alias");
     TargetIdeInfo ccTarget =
         createCcTarget(
                 "//foo/bar:library",
@@ -336,8 +470,7 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
             .addTarget(ccTarget)
             .build();
     assertThatResolving(projectView, targetMap)
-        .producesCToolchainIdeInfoForTarget(
-            "//foo/bar:library", cToolchainIdeInfoBuilderAlias.build());
+        .producesCompilerSettingsForTarget("//foo/bar:library", cToolchainIdeInfoBuilderAlias.build());
   }
 
   // This is for an intermediate state where the cc_library starlarkification is rolled out, and
@@ -349,8 +482,7 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
   @Test
   public void withCcToolchainAlias_testSingleSourceTarget_missingCcToolChainAliasTarget() {
     ProjectView projectView = projectView(directories("foo/bar"), targets("//foo/bar:library"));
-    CToolchainIdeInfo.Builder cToolchainIdeInfoBuilder =
-        CToolchainIdeInfo.builder().setCppExecutable(new ExecutionRootPath("cc"));
+    CToolchainIdeInfo.Builder cToolchainIdeInfoBuilder = createToolchainIdeInfoBuilder();
     TargetIdeInfo ccTarget =
         createCcTarget(
                 "//foo/bar:library",
@@ -366,11 +498,11 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
             .build();
     String errMessage =
         String.format(
-            "cc target is expected to depend on exactly 1 cc toolchain."
-                + " Found 0 toolchains for these targets: %s",
-            ccTarget.getKey());
+            "Unexpected number of cc toolchain dependencies\n"
+                + "%s: No toolchain dependencies found\n",
+            ccTarget.getKey().presentable());
     assertThatResolving(projectView, targetMap, errMessage)
-        .producesCToolchainIdeInfoForTarget("//foo/bar:library", cToolchainIdeInfoBuilder.build());
+        .producesCompilerSettingsForTarget("//foo/bar:library", cToolchainIdeInfoBuilder.build());
   }
 
   @Test
@@ -516,7 +648,7 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
             .build();
 
     assertThatResolving(projectView, targetMap).producesConfigurationsFor("//foo/bar:binary");
-    Collection<BlazeResolveConfiguration> initialConfigurations =
+    ImmutableList<BlazeResolveConfiguration> initialConfigurations =
         resolverResult.getAllConfigurations();
     BlazeConfigurationResolverResult oldResult = resolverResult;
 
@@ -702,9 +834,10 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
 
     computeResolverResult(projectView, targetMap);
     errorCollector.assertIssueContaining(
-        "Unable to check compiler version for \"/root/cc\".\n"
+        "Failed to check compiler version:\n"
             + "injected fault\n"
-            + "Check if running the compiler with --version works on the cmdline.");
+            + "Compiler executable:\n"
+            + "/root/cc");
   }
 
   @Test
@@ -718,19 +851,15 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
     // inconsistent TCs, even though it was originally consistent.
     ProjectView projectView = projectView(directories("foo"), targets("//foo:*"));
 
-    CToolchainIdeInfo.Builder aarch32Toolchain =
-        CToolchainIdeInfo.builder()
-            .setTargetName("arm-linux-androideabi")
-            .setCppExecutable(new ExecutionRootPath("bin/arm-linux-androideabi-gcc"));
+    CToolchainIdeInfo.Builder aarch32Toolchain = createToolchainIdeInfoBuilder("bin/arm-linux-androideabi-gcc")
+            .setTargetName("arm-linux-androideabi");
     TargetIdeInfo.Builder aarch32ToolchainTarget =
         TargetIdeInfo.builder()
             .setLabel("//toolchains:armv7a")
             .setKind(CppBlazeRules.RuleTypes.CC_TOOLCHAIN.getKind())
             .setCToolchainInfo(aarch32Toolchain);
-    CToolchainIdeInfo.Builder aarch64Toolchain =
-        CToolchainIdeInfo.builder()
-            .setTargetName("aarch64-linux-android")
-            .setCppExecutable(new ExecutionRootPath("bin/aarch64-linux-android-gcc"));
+    CToolchainIdeInfo.Builder aarch64Toolchain = createToolchainIdeInfoBuilder("bin/aarch64-linux-android-gcc")
+            .setTargetName("aarch64-linux-android");
     TargetIdeInfo.Builder aarch64ToolchainTarget =
         TargetIdeInfo.builder()
             .setLabel("//toolchains:aarch64")
@@ -740,7 +869,9 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
         TargetIdeInfo.builder()
             .setLabel("//foo:native_lib")
             .setKind(CppBlazeRules.RuleTypes.CC_LIBRARY.getKind())
-            .setCInfo(CIdeInfo.builder().addSource(src("foo/native.cc")))
+            .setCInfo(CIdeInfo.builder().setRuleContext(
+                CIdeInfo.RuleContext.builder().build())
+            )
             .addSource(src("foo/native.cc"))
             .addDependency("//foo:native_lib2")
             .addDependency("//toolchains:armv7a");
@@ -748,7 +879,9 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
         TargetIdeInfo.builder()
             .setLabel("//foo:native_lib2")
             .setKind(CppBlazeRules.RuleTypes.CC_LIBRARY.getKind())
-            .setCInfo(CIdeInfo.builder().addSource(src("foo/native2.cc")))
+            .setCInfo(CIdeInfo.builder().setRuleContext(
+                CIdeInfo.RuleContext.builder().build())
+            )
             .addSource(src("foo/native2.cc"))
             .addDependency("//toolchains:aarch64");
     TargetMap targetMap =
@@ -762,10 +895,167 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
     computeResolverResult(projectView, targetMap);
     errorCollector.assertNoIssues();
 
-    assertCToolchainIdeInfoForTarget(
-        targetWith32Dep.build().getKey().toString(), aarch32Toolchain.build());
-    assertCToolchainIdeInfoForTarget(
-        targetWith64Dep.build().getKey().toString(), aarch64Toolchain.build());
+    assertCompilerSettingsForTarget(
+        targetWith32Dep.build().getKey().label().toString(), aarch32Toolchain.build());
+    assertCompilerSettingsForTarget(
+        targetWith64Dep.build().getKey().label().toString(), aarch64Toolchain.build());
+  }
+
+  @Test
+  public void testExternalDependencyResolvedWhenIsPartOfProject() throws IOException {
+    ProjectView projectView = projectView(
+        directories("test", "external_dependency"),
+        targets("//test:target"));
+
+    TargetMap targetMap =
+        TargetMapBuilder.builder()
+            .addTarget(createCcToolchain())
+            .addTarget(
+                createCcTarget(
+                    "//test:target",
+                    CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                    ImmutableList.of(src("test/test.cc")),
+                    "//:toolchain")
+                    .addDependency("@external_dependency//foo:bar"))
+            .addTarget(
+                createCcTarget(
+                    "@external_dependency//foo:bar",
+                    CppBlazeRules.RuleTypes.CC_LIBRARY.getKind(),
+                    ImmutableList.of(src("foo/bar.cpp")),
+                    "//:toolchain"))
+            .build();
+
+    File externalRoot = WorkspaceHelper.getExternalSourceRoot(
+        BlazeProjectDataManager.getInstance(project).getBlazeProjectData()).toFile();
+
+    File spyExternalDependencyRoot = spy(new File(externalRoot, "external_dependency"));
+    doReturn(true).when(spyExternalDependencyRoot).isDirectory();
+    Path mockExternalDependencyInWorkspace = mock(Path.class);
+    when(mockExternalDependencyInWorkspace.toRealPath()).thenReturn(
+        mockExternalDependencyInWorkspace);
+    when(mockExternalDependencyInWorkspace.toFile()).thenReturn(
+        workspaceRoot.fileForPath(new WorkspacePath("external_dependency")));
+
+    doReturn(mockExternalDependencyInWorkspace).when(spyExternalDependencyRoot).toPath();
+
+    File mockExternalSourceRootFile = mock(File.class);
+    when(mockExternalSourceRootFile.listFiles()).thenReturn(
+        List.of(spyExternalDependencyRoot).toArray(File[]::new));
+
+   try (MockedStatic<WorkspaceHelper> mockedStatic = Mockito.mockStatic(WorkspaceHelper.class)) {
+     mockedStatic.when(
+         () -> WorkspaceHelper.getExternalWorkspace(Mockito.any(MockProject.class),
+             Mockito.any(String.class))).thenReturn(new WorkspaceRoot(spyExternalDependencyRoot));
+
+     assertThatResolving(projectView, targetMap).producesConfigurationsFor(
+         "//test:target and 1 other target(s)");
+     assertThat(resolverResult.getAllConfigurations().get(0).getTargets().stream()
+         .map(targetKey -> targetKey.label().toString())
+         .collect(Collectors.toList())).containsAtLeast("//test:target",
+         "@external_dependency//foo:bar");
+   }
+  }
+
+  @Test
+  public void xcodeSettingsAreChecked() {
+    ProjectView projectView = projectView(directories("foo/bar"), targets("//foo/bar:binary"));
+    TargetMap targetMap =
+        TargetMapBuilder.builder()
+            .addTarget(createCcToolchain())
+            .build();
+    XcodeCompilerSettings expected = XcodeCompilerSettings.create(Path.of("/tmp/dev_dir"), Path.of("/tmp/dev_dir/sdk"));
+    xcodeSettingsProvider.setXcodeSettings(expected);
+    assertThatResolving(projectView, targetMap).producesXcodeConfiguration(expected);
+  }
+
+  private TargetMap createXcodeTargetMap() {
+    return TargetMapBuilder.builder()
+        .addTarget(TargetIdeInfo.builder()
+            .setLabel("//:toolchain")
+            .setKind(CppBlazeRules.RuleTypes.CC_TOOLCHAIN.getKind())
+            .setCToolchainInfo(createToolchainIdeInfoBuilder().setTargetName("toolchain").setXcodeInfo(XCODE_INFO)))
+        .addTarget(createCcTarget(
+            "//foo/bar:binary",
+            CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+            ImmutableList.of(src("foo/bar/binary.cc")),
+            "//:toolchain"))
+        .build();
+  }
+
+  @Test
+  public void xcodeSettingsOfToolchainArePreferred() throws IOException {
+    final var outputBase = tempFolder.getRoot().toPath();
+    final var xcodeInfoFile = outputBase.resolve("execroot/_main").resolve(XCODE_INFO.getExecutionRootRelativePath());
+    Files.createDirectories(xcodeInfoFile.getParent());
+    Files.writeString(xcodeInfoFile, "XCODE_VERSION_OVERRIDE=26.0\0DEVELOPER_DIR=/xcode/dev_dir\0SDKROOT=/xcode/sdk\0");
+
+    xcodeSettingsProvider.setXcodeSettings(XcodeCompilerSettings.create(Path.of("/tmp/dev_dir"), Path.of("/tmp/dev_dir/sdk")));
+
+    final var projectView = projectView(directories("foo/bar"), targets("//foo/bar:binary"));
+    computeResolverResult(projectView, createXcodeTargetMap(), outputBase.toString());
+    errorCollector.assertNoIssues();
+
+    assertThat(getCompilerSettingsForTarget("//foo/bar:binary").environment())
+        .containsAtLeast("DEVELOPER_DIR", "/xcode/dev_dir", "SDKROOT", "/xcode/sdk");
+  }
+
+  @Test
+  public void xcodeSettingsFallBackIfToolchainInfoIsMissing() {
+    final var outputBase = tempFolder.getRoot().toPath();
+
+    xcodeSettingsProvider.setXcodeSettings(XcodeCompilerSettings.create(Path.of("/tmp/dev_dir"), Path.of("/tmp/dev_dir/sdk")));
+
+    final var projectView = projectView(directories("foo/bar"), targets("//foo/bar:binary"));
+    computeResolverResult(projectView, createXcodeTargetMap(), outputBase.toString());
+    errorCollector.assertIssues("Unable to read Xcode info of toolchain: " + XCODE_INFO);
+
+    assertThat(getCompilerSettingsForTarget("//foo/bar:binary").environment())
+        .containsAtLeast("DEVELOPER_DIR", "/tmp/dev_dir", "SDKROOT", "/tmp/dev_dir/sdk");
+  }
+
+  @Test
+  public void testSingleSourceTargetWithConfigurationId() {
+    final var projectView = projectView(directories("foo/bar"), targets("//foo/bar:binary"));
+    final var targetMap = TargetMapBuilder.builder()
+        .addTarget(createCcToolchain())
+        .addTarget(createCcTarget(
+                "//foo/bar:binary",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                ImmutableList.of(src("foo/bar/binary.cc")),
+                "//:toolchain"
+            ).setConfigurationId("abc123")
+        )
+        .build();
+    assertThatResolving(projectView, targetMap).producesConfigurationsFor("//foo/bar:binary (abc123)");
+  }
+
+  @Test
+  public void testSameTargetDifferentConfigurations() {
+    final var projectView = projectView(directories("foo/bar"), targets("//foo/bar:binary"));
+    final var targetMap = TargetMapBuilder.builder()
+        .addTarget(createCcToolchain())
+        .addTarget(createCcTarget(
+                "//foo/bar:binary",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                ImmutableList.of(src("foo/bar/binary.cc")),
+                ImmutableList.of("-DCONFIG_A=1"),
+                "//:toolchain"
+            ).setConfigurationId("configA")
+        )
+        .addTarget(createCcTarget(
+                "//foo/bar:binary",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                ImmutableList.of(src("foo/bar/binary.cc")),
+                ImmutableList.of("-DCONFIG_B=1"),
+                "//:toolchain"
+            ).setConfigurationId("configB")
+        )
+        .build();
+
+    assertThatResolving(projectView, targetMap).producesConfigurationsFor(
+        "//foo/bar:binary (configA)",
+        "//foo/bar:binary (configB)"
+    );
   }
 
   private static ArtifactLocation src(String path) {
@@ -790,25 +1080,26 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
     TargetIdeInfo.Builder targetInfo =
         TargetIdeInfo.builder().setLabel(label).setKind(kind).addDependency(toolchainDep);
     sources.forEach(targetInfo::addSource);
-    return targetInfo.setCInfo(CIdeInfo.builder().addSources(sources).addLocalCopts(copts));
+
+    final var ruleContext = CIdeInfo.RuleContext.builder()
+        .setCopts(copts)
+        .build();
+
+    return targetInfo.setCInfo(CIdeInfo.builder().setRuleContext(ruleContext));
   }
 
   private static TargetIdeInfo.Builder createCcToolchain() {
     return TargetIdeInfo.builder()
         .setLabel("//:toolchain")
         .setKind(CppBlazeRules.RuleTypes.CC_TOOLCHAIN.getKind())
-        .setCToolchainInfo(
-            CToolchainIdeInfo.builder()
-                .setCppExecutable(new ExecutionRootPath("cc"))
-                .setTargetName("toolchain"));
+        .setCToolchainInfo(createToolchainIdeInfoBuilder().setTargetName("toolchain"));
   }
 
-  private static TargetIdeInfo.Builder createCcToolchainSuite(
-      CToolchainIdeInfo.Builder cToolchainIdeInfoBuilder) {
+  private static TargetIdeInfo.Builder createCcToolchainSuite(CToolchainIdeInfo.Builder cToolchainIdeInfoBuilder) {
     return TargetIdeInfo.builder()
         .setLabel("//:toolchain_suite")
         .setKind(CppBlazeRules.RuleTypes.CC_TOOLCHAIN_SUITE.getKind())
-        .setCToolchainInfo(cToolchainIdeInfoBuilder);
+        .setCToolchainInfo(cToolchainIdeInfoBuilder.setTargetName("toolchain_suite"));
   }
 
   private static TargetIdeInfo.Builder createCcToolchainAlias(
@@ -822,18 +1113,15 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
   private static ListSection<DirectoryEntry> directories(String... directories) {
     return ListSection.builder(DirectorySection.KEY)
         .addAll(
-            Arrays.stream(directories)
+            stream(directories)
                 .map(directory -> DirectoryEntry.include(WorkspacePath.createIfValid(directory)))
-                .collect(Collectors.toList()))
+                .collect(toImmutableList()))
         .build();
   }
 
   private static ListSection<TargetExpression> targets(String... targets) {
     return ListSection.builder(TargetSection.KEY)
-        .addAll(
-            Arrays.stream(targets)
-                .map(TargetExpression::fromStringSafe)
-                .collect(Collectors.toList()))
+        .addAll(stream(targets).map(TargetExpression::fromStringSafe).collect(toImmutableList()))
         .build();
   }
 
@@ -848,13 +1136,18 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
     when(mockFile.isValid()).thenReturn(true);
     File f = new File(path);
     when(mockFileSystem.findFileByIoFile(f)).thenReturn(mockFile);
+    when(mockFileSystem.findFileByNioFile(f.toPath())).thenReturn(mockFile);
     when(mockFile.getName()).thenReturn(f.getName());
     return mockFile;
   }
 
   private void computeResolverResult(ProjectView projectView, TargetMap targetMap) {
+    computeResolverResult(projectView, targetMap, null);
+  }
+
+  private void computeResolverResult(ProjectView projectView, TargetMap targetMap, @Nullable String outputBase) {
     BlazeProjectData blazeProjectData =
-        MockBlazeProjectDataBuilder.builder(workspaceRoot).setTargetMap(targetMap).build();
+        MockBlazeProjectDataBuilder.builder(workspaceRoot).setTargetMap(targetMap).setOutputBase(outputBase).build();
     resolverResult =
         resolver.update(
             context,
@@ -887,9 +1180,9 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
       }
 
       @Override
-      public void producesCToolchainIdeInfoForTarget(
+      public void producesCompilerSettingsForTarget(
           String target, CToolchainIdeInfo expectedCToolchainIdeInfo) {
-        assertCToolchainIdeInfoForTarget(target, expectedCToolchainIdeInfo);
+        assertCompilerSettingsForTarget(target, expectedCToolchainIdeInfo);
       }
 
       @Override
@@ -904,39 +1197,56 @@ public class BlazeConfigurationResolverTest extends BlazeTestCase {
             resolverResult.getAllConfigurations();
         for (BlazeResolveConfiguration expectedItem : expectedReused) {
           assertThat(
-                  currentConfigurations.stream()
-                      .anyMatch(actualItem -> actualItem.isEquivalentConfigurations(expectedItem)))
+                  currentConfigurations.stream().anyMatch(actualItem -> actualItem.equals(expectedItem)))
               .isTrue();
         }
         List<String> notReusedTargets =
             currentConfigurations.stream()
                 .filter(
                     configuration ->
-                        expectedReused.stream()
-                            .noneMatch(configuration::isEquivalentConfigurations))
+                        expectedReused.stream().noneMatch(configuration::equals))
                 .map(configuration -> configuration.getDisplayName())
                 .collect(Collectors.toList());
         assertThat(notReusedTargets).containsExactly((Object[]) expectedNotReused);
       }
+
+      @Override
+      public void producesXcodeConfiguration(XcodeCompilerSettings expected) {
+        assertThat(resolverResult.getXcodeProperties().isPresent()).isTrue();
+        XcodeCompilerSettings actual = resolverResult.getXcodeProperties().get();
+        assertThat(actual).isEqualTo(expected);
+      }
     };
   }
 
-  private void assertCToolchainIdeInfoForTarget(String target, CToolchainIdeInfo expected) {
-    ImmutableList<Map.Entry<BlazeResolveConfigurationData, BlazeResolveConfiguration>> entry =
-        resolverResult.getConfigurationMap().entrySet().stream()
-            .filter(e -> Objects.equals(e.getValue().getDisplayName(), target))
-            .collect(toImmutableList());
-    assertThat(entry).hasSize(1);
-    assertThat(entry.get(0).getKey().getCToolchainIdeInfo()).isEqualTo(expected);
+  private BlazeCompilerSettings getCompilerSettingsForTarget(String target) {
+    final var settings = resolverResult.getConfigurationMap().values().stream()
+        .filter(it -> it.getDisplayName().equals(target))
+        .map(it -> it.getConfigurationData().compilerSettings())
+        .collect(toImmutableList());
+
+    assertThat(settings).hasSize(1);
+    return settings.get(0);
+  }
+
+  private void assertCompilerSettingsForTarget(String target, CToolchainIdeInfo expected) {
+    final var setting = getCompilerSettingsForTarget(target);
+
+    assertThat(setting.name()).isEqualTo(expected.compilerName());
+    assertThat(setting.cSwitches()).containsExactlyElementsIn(expected.cCompilerOptions());
+    assertThat(setting.cppSwitches()).containsExactlyElementsIn(expected.cppCompilerOptions());
+    assertThat(setting.builtInIncludes()).containsExactlyElementsIn(expected.builtInIncludeDirectories());
   }
 
   private interface Subject {
     void producesConfigurationsFor(String... expected);
 
-    void producesCToolchainIdeInfoForTarget(String target, CToolchainIdeInfo expected);
+    void producesCompilerSettingsForTarget(String target, CToolchainIdeInfo expected);
 
     void producesNoConfigurations();
 
     void reusedConfigurations(Collection<BlazeResolveConfiguration> reused, String... notReused);
+
+    void producesXcodeConfiguration(XcodeCompilerSettings expected);
   }
 }

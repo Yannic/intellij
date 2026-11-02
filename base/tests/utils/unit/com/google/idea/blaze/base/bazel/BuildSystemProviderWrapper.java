@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 The Bazel Authors. All rights reserved.
+ * Copyright 2026 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,13 @@
 package com.google.idea.blaze.base.bazel;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.MustBeClosed;
 import com.google.idea.blaze.base.bazel.BuildSystem.BuildInvoker;
-import com.google.idea.blaze.base.bazel.BuildSystem.SyncStrategy;
+import com.google.idea.blaze.base.command.BlazeCommand;
 import com.google.idea.blaze.base.command.BlazeCommandRunner;
 import com.google.idea.blaze.base.command.buildresult.BuildResultHelper;
+import com.google.idea.blaze.base.command.buildresult.bepparser.BuildEventStreamProvider;
 import com.google.idea.blaze.base.command.info.BlazeInfo;
 import com.google.idea.blaze.base.lang.buildfile.language.semantics.RuleDefinition;
 import com.google.idea.blaze.base.model.BlazeVersionData;
@@ -30,10 +32,15 @@ import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BuildBinaryType;
 import com.google.idea.blaze.base.settings.BuildSystemName;
 import com.google.idea.blaze.base.sync.SyncScope.SyncFailedException;
+import com.google.idea.blaze.exception.BuildException;
 import com.intellij.openapi.project.Project;
-import java.util.Optional;
-import java.util.function.Supplier;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+
+import java.io.InputStream;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * A subclass of {@link BuildSystemProvider} that allows functionality to be overridden in tests.
@@ -42,10 +49,9 @@ public class BuildSystemProviderWrapper implements BuildSystemProvider {
 
   private final Supplier<BuildSystemProvider> innerProvider;
   private BuildSystemProvider inner;
-  private BuildSystemWrapper buildSystem;
-  private Supplier<BuildResultHelper> buildResultHelperSupplier;
+  private BuildSystem buildSystem;
+  private boolean throwExceptionOnGetBlazeInfo;
   private BuildBinaryType buildBinaryType;
-  private SyncStrategy syncStrategy;
 
   /**
    * Create a wrapper for the given {@link BuildSystemProvider}.
@@ -91,16 +97,30 @@ public class BuildSystemProviderWrapper implements BuildSystemProvider {
         };
   }
 
+  public static BuildSystemProviderWrapper getInstance(Project project) {
+    BuildSystemProvider provider = Blaze.getBuildSystemProvider(project);
+    if (provider instanceof BuildSystemProviderWrapper) {
+      return (BuildSystemProviderWrapper) provider;
+    }
+    throw new IllegalStateException(
+        "BuildSystemProvider not an instance of BuildSystemProviderWrapper");
+  }
+
   private synchronized BuildSystemProvider inner() {
     if (inner == null) {
       inner = innerProvider.get();
-      buildSystem = new BuildSystemWrapper(inner.getBuildSystem());
+      buildSystem = createBuildSystemWrapper(inner.getBuildSystem());
     }
     return inner;
   }
 
+  @NotNull
+  protected BuildSystem createBuildSystemWrapper(BuildSystem innerBuildSystem) {
+    return new BuildSystemWrapper(innerBuildSystem);
+  }
+
   @Override
-  public BuildSystem getBuildSystem() {
+  public final BuildSystem getBuildSystem() {
     inner(); // ensure buildSystem is initialized
     return buildSystem;
   }
@@ -153,39 +173,23 @@ public class BuildSystemProviderWrapper implements BuildSystemProvider {
     return inner().possibleWorkspaceFileNames();
   }
 
-  /**
-   * Sets a supplier for {@link BuildResultHelper} instances to be return by {@code
-   * getBuildSystem().getBuildInvoker().createBuildResultProvider()}.
-   *
-   * <p>If not set, or set to {@code null}, the {@link BuildResultHelper} will be provided by the
-   * wrapped instance.
-   *
-   * @param supplier A supplier that will be called for each call to {@link
-   *     BuildInvoker#createBuildResultHelper}.
-   */
-  public void setBuildResultHelperSupplier(Supplier<BuildResultHelper> supplier) {
-    buildResultHelperSupplier = supplier;
+  @Override
+  public ImmutableList<String> possibleModuleFileNames() {
+    return inner().possibleModuleFileNames();
   }
 
-  /**
-   * Sets the build binary type to be returned by {@code
-   * getBuildSystem().getBuildInvoker().getType()}.
-   *
-   * <p>If not set, or set to {@code null}, the {@link BuildBinaryType} returned will come from the
-   * wrapped instance.
-   */
-  public void setBuildBinaryType(BuildBinaryType type) {
-    buildBinaryType = type;
-  }
+  @Override
+  public ImmutableList<String> possibleModuleFileNameWildcards() { return inner().possibleModuleFileNameWildcards(); }
 
   /**
-   * Sets the build binary type to be returned by {@code getBuildSystem().getSyncStrategy()}.
+   * Sets a boolean value to toggle the outcome of getBlazeInfo() to be returned by {@code
+   * getBuildSystem().getBuildInvoker().blazeInfo()}.
    *
-   * <p>If not set, or set to {@code null}, the {@link SyncStrategy} returned will come form the
-   * wrapped instance.
+   * <p>If not set, or set to {@code false}, the {@link BlazeInfo} will be provided by the wrapped
+   * instance.
    */
-  public void setSyncStrategy(SyncStrategy strategy) {
-    syncStrategy = strategy;
+  public void setThrowExceptionOnGetBlazeInfo(boolean throwExceptionOnGetBlazeInfo) {
+    this.throwExceptionOnGetBlazeInfo = throwExceptionOnGetBlazeInfo;
   }
 
   class BuildInvokerWrapper implements BuildInvoker {
@@ -193,6 +197,29 @@ public class BuildSystemProviderWrapper implements BuildSystemProvider {
 
     BuildInvokerWrapper(BuildInvoker wrapped) {
       inner = wrapped;
+    }
+
+    @Override
+    public BuildEventStreamProvider invoke(BlazeCommand.Builder blazeCommandBuilder, BlazeContext blazeContext)
+        throws BuildException {
+      return inner.invoke(blazeCommandBuilder, blazeContext);
+    }
+
+    @Override
+    @MustBeClosed
+    public InputStream invokeQuery(BlazeCommand.Builder blazeCommandBuilder, BlazeContext blazeContext) throws BuildException {
+      return inner.invokeQuery(blazeCommandBuilder, blazeContext);
+    }
+
+    @Override
+    @MustBeClosed
+    public InputStream invokeInfo(BlazeCommand.Builder blazeCommandBuilder, BlazeContext blazeContext) throws BuildException {
+      return inner.invokeInfo(blazeCommandBuilder, blazeContext);
+    }
+
+    @Override
+    public ImmutableSet<Capability> getCapabilities() {
+      return inner.getCapabilities();
     }
 
     @Override
@@ -209,21 +236,16 @@ public class BuildSystemProviderWrapper implements BuildSystemProvider {
     }
 
     @Override
-    public boolean supportsParallelism() {
-      return inner.supportsParallelism();
-    }
-
-    @Override
-    public BlazeInfo getBlazeInfo() throws SyncFailedException {
-      return inner.getBlazeInfo();
+    public BlazeInfo getBlazeInfo(BlazeContext blazeContext) throws SyncFailedException {
+      if (throwExceptionOnGetBlazeInfo) {
+        throw new SyncFailedException();
+      }
+      return inner.getBlazeInfo(blazeContext);
     }
 
     @Override
     @MustBeClosed
     public BuildResultHelper createBuildResultHelper() {
-      if (buildResultHelperSupplier != null) {
-        return buildResultHelperSupplier.get();
-      }
       return inner.createBuildResultHelper();
     }
 
@@ -252,31 +274,25 @@ public class BuildSystemProviderWrapper implements BuildSystemProvider {
     }
 
     @Override
-    public BuildInvokerWrapper getBuildInvoker(Project project, BlazeContext context) {
-      return new BuildInvokerWrapper(inner.getBuildInvoker(project, context));
+    public Optional<BuildInvoker> getBuildInvoker(
+        Project project, Set<BuildInvoker.Capability> requirements) {
+      return Optional.of(new BuildInvokerWrapper(inner.getBuildInvoker(project, requirements).orElseThrow()));
     }
 
     @Override
-    public Optional<BuildInvoker> getParallelBuildInvoker(Project project, BlazeContext context) {
-      Optional<BuildInvoker> invoker = inner.getParallelBuildInvoker(project, context);
-      if (invoker.isPresent()) {
-        invoker = Optional.of(new BuildInvokerWrapper(invoker.get()));
-      }
-      return invoker;
-    }
-
-    @Override
-    public SyncStrategy getSyncStrategy(Project project) {
-      if (syncStrategy != null) {
-        return syncStrategy;
-      }
-      return inner.getSyncStrategy(project);
+    public BuildInvoker getBuildInvoker(Project project) {
+      return new BuildInvokerWrapper(inner.getBuildInvoker(project));
     }
 
     @Override
     public void populateBlazeVersionData(
         WorkspaceRoot workspaceRoot, BlazeInfo blazeInfo, BlazeVersionData.Builder builder) {
       inner.populateBlazeVersionData(workspaceRoot, blazeInfo, builder);
+    }
+
+    @Override
+    public Optional<String> getBazelVersionString(BlazeInfo blazeInfo) {
+      return inner.getBazelVersionString(blazeInfo);
     }
   }
 }

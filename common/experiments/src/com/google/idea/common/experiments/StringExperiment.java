@@ -20,8 +20,15 @@ import javax.annotation.Nullable;
 /** String-valued experiment. */
 public class StringExperiment extends Experiment {
 
-  public StringExperiment(String key) {
+  public final String defaultValue;
+
+  public StringExperiment(String key, String defaultValue) {
     super(key);
+    this.defaultValue = defaultValue;
+  }
+
+  public StringExperiment(String key) {
+    this(key, null);
   }
 
   @Nullable
@@ -32,5 +39,10 @@ public class StringExperiment extends Experiment {
   @Override
   public String getLogValue() {
     return String.valueOf(getValue());
+  }
+
+  @Override
+  public String getRawDefault() {
+    return defaultValue;
   }
 }

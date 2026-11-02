@@ -19,6 +19,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.stream.Collectors.toList;
 
 import com.google.common.collect.ImmutableList;
+import com.google.idea.blaze.base.dependencies.TargetInfo;
 import com.google.idea.blaze.base.ideinfo.TargetIdeInfo;
 import com.google.idea.blaze.base.ideinfo.TargetKey;
 import com.google.idea.blaze.base.model.BlazeProjectData;
@@ -26,8 +27,9 @@ import com.google.idea.blaze.base.model.primitives.TargetExpression;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.projectview.ProjectViewManager;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
-import com.google.idea.blaze.base.qsync.QuerySync;
+import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
 import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
 import com.google.idea.blaze.base.sync.projectview.ImportRoots;
@@ -214,10 +216,6 @@ public class TargetExpressionListUi extends JPanel {
     }
 
     private static Collection<String> getTargets(Project project) {
-      // TODO(b/262428615): Retrieve data from query sync
-      if (QuerySync.isEnabled()) {
-        return ImmutableList.of();
-      }
       BlazeProjectData projectData =
           BlazeProjectDataManager.getInstance(project).getBlazeProjectData();
       BlazeImportSettings importSettings =
@@ -231,13 +229,21 @@ public class TargetExpressionListUi extends JPanel {
                   WorkspaceRoot.fromImportSettings(importSettings), importSettings.getBuildSystem())
               .add(projectViewSet)
               .build();
-      return projectData.getTargetMap().targets().stream()
+
+      if (Blaze.getProjectType(project) == ProjectType.QUERY_SYNC) {
+        return projectData.targets().stream()
+            .filter(importRoots::importAsSource)
+            .map(TargetExpression::toString)
+            .collect(toImmutableList());
+      }
+
+      return projectData.targetMap().targets().stream()
           .filter(TargetIdeInfo::isPlainTarget)
           .map(TargetIdeInfo::getKey)
-          .map(TargetKey::getLabel)
+          .map(TargetKey::label)
           .filter(importRoots::importAsSource)
           .map(TargetExpression::toString)
-          .collect(toList());
+          .collect(toImmutableList());
     }
   }
 }

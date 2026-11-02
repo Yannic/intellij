@@ -45,7 +45,7 @@ public class CPrefetchFileSource implements PrefetchFileSource {
       ImportRoots importRoots,
       BlazeProjectData blazeProjectData,
       Set<File> files) {
-    if (!blazeProjectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.C)
+    if (!blazeProjectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.C)
         || !prefetchAllCppSources.getValue()) {
       return;
     }
@@ -55,15 +55,15 @@ public class CPrefetchFileSource implements PrefetchFileSource {
           if (!location.isSource() || location.isExternal()) {
             return false;
           }
-          WorkspacePath path = WorkspacePath.createIfValid(location.getRelativePath());
+          WorkspacePath path = WorkspacePath.createIfValid(location.relativePath());
           if (path == null || importRoots.containsWorkspacePath(path)) {
             return false;
           }
           String extension = FileUtil.getExtension(path.relativePath());
           return CFileExtensions.HEADER_EXTENSIONS.contains(extension);
         };
-    ArtifactLocationDecoder decoder = blazeProjectData.getArtifactLocationDecoder();
-    for (TargetIdeInfo target : blazeProjectData.getTargetMap().targets()) {
+    ArtifactLocationDecoder decoder = blazeProjectData.artifactLocationDecoder();
+    for (TargetIdeInfo target : blazeProjectData.targetMap().targets()) {
       if (target.getcIdeInfo() == null) {
         continue;
       }

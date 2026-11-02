@@ -1,9 +1,11 @@
-licenses(["notice"])
-
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_java//java:defs.bzl", "java_test")
 load(
     "//aspect/testing/rules:intellij_aspect_test_fixture.bzl",
     "intellij_aspect_test_fixture",
 )
+
+licenses(["notice"])
 
 cc_library(
     name = "simple",
@@ -17,6 +19,7 @@ cc_library(
     ],
     defines = ["VERSION2"],
     includes = ["foo/bar"],
+    local_defines = ["LOCAL_DEFINE"],
     textual_hdrs = ["simple/simple_textual.h"],
 )
 
@@ -64,7 +67,7 @@ java_test(
         "//aspect/testing/rules:IntellijAspectTest",
         "//aspect/testing/rules:intellij_aspect_test_fixture_java_proto",
         "//intellij_platform_sdk:test_libs",
-        "//proto:intellij_ide_info_java_proto",
-        "@junit//jar",
+        "//proto:proto_deps",
+        "//third_party/java/junit",
     ],
 )

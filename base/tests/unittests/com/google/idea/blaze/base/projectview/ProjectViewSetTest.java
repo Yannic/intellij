@@ -16,6 +16,7 @@
 package com.google.idea.blaze.base.projectview;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.idea.blaze.base.projectview.parser.ProjectViewParser.TEMPORARY_LINE_NUMBER;
 
 import com.google.common.collect.ImmutableList;
 import com.google.idea.blaze.base.BlazeTestCase;
@@ -33,6 +34,7 @@ import com.google.idea.blaze.base.projectview.section.SectionParser;
 import com.google.idea.blaze.base.projectview.section.sections.AdditionalLanguagesSection;
 import com.google.idea.blaze.base.projectview.section.sections.AutomaticallyDeriveTargetsSection;
 import com.google.idea.blaze.base.projectview.section.sections.BazelBinarySection;
+import com.google.idea.blaze.base.projectview.section.sections.BuildConfigSection;
 import com.google.idea.blaze.base.projectview.section.sections.BuildFlagsSection;
 import com.google.idea.blaze.base.projectview.section.sections.DirectoryEntry;
 import com.google.idea.blaze.base.projectview.section.sections.DirectorySection;
@@ -44,12 +46,17 @@ import com.google.idea.blaze.base.projectview.section.sections.RunConfigurations
 import com.google.idea.blaze.base.projectview.section.sections.Sections;
 import com.google.idea.blaze.base.projectview.section.sections.ShardBlazeBuildsSection;
 import com.google.idea.blaze.base.projectview.section.sections.SyncFlagsSection;
+import com.google.idea.blaze.base.projectview.section.sections.SyncManualTargetsSection;
 import com.google.idea.blaze.base.projectview.section.sections.TargetSection;
 import com.google.idea.blaze.base.projectview.section.sections.TargetShardSizeSection;
 import com.google.idea.blaze.base.projectview.section.sections.TestFlagsSection;
 import com.google.idea.blaze.base.projectview.section.sections.TestSourceSection;
 import com.google.idea.blaze.base.projectview.section.sections.TextBlock;
 import com.google.idea.blaze.base.projectview.section.sections.TextBlockSection;
+import com.google.idea.blaze.base.projectview.section.sections.TryImportSection;
+import com.google.idea.blaze.base.projectview.section.sections.UseExclusionPatternsSection;
+import com.google.idea.blaze.base.projectview.section.sections.UseQuerySyncSection;
+import com.google.idea.blaze.base.projectview.section.sections.ViewProjectRootSection;
 import com.google.idea.blaze.base.projectview.section.sections.WorkspaceTypeSection;
 import com.google.idea.blaze.base.sync.BlazeSyncPlugin;
 import com.google.idea.common.experiments.ExperimentService;
@@ -79,10 +86,12 @@ public class ProjectViewSetTest extends BlazeTestCase {
                     .add(
                         ListSection.builder(DirectorySection.KEY)
                             .add(DirectoryEntry.include(new WorkspacePath("test"))))
+                    .add(ScalarSection.builder(UseQuerySyncSection.KEY).set(true))
                     .add(
                         ListSection.builder(TargetSection.KEY)
                             .add(TargetExpression.fromStringSafe("//test:all")))
                     .add(ScalarSection.builder(ImportSection.KEY).set(new WorkspacePath("test")))
+                    .add(ScalarSection.builder(TryImportSection.KEY).set(new WorkspacePath("test-optional")))
                     .add(ListSection.builder(TestSourceSection.KEY).add(new Glob("javatests/*")))
                     .add(ListSection.builder(ExcludedSourceSection.KEY).add(new Glob("*.java")))
                     .add(ListSection.builder(BuildFlagsSection.KEY).add("--android_sdk=abcd"))
@@ -97,16 +106,22 @@ public class ProjectViewSetTest extends BlazeTestCase {
                     .add(ScalarSection.builder(WorkspaceTypeSection.KEY).set(WorkspaceType.JAVA))
                     .add(
                         ListSection.builder(AdditionalLanguagesSection.KEY).add(LanguageClass.JAVA))
-                    .add(TextBlockSection.of(TextBlock.newLine()))
+                    .add(TextBlockSection.of(TextBlock.newLine(TEMPORARY_LINE_NUMBER)))
                     .add(
                         ListSection.builder(RunConfigurationsSection.KEY)
                             .add(new WorkspacePath("test")))
                     .add(ScalarSection.builder(AutomaticallyDeriveTargetsSection.KEY).set(false))
+                    .add(ScalarSection.builder(SyncManualTargetsSection.KEY).set(false))
                     .add(ScalarSection.builder(ShardBlazeBuildsSection.KEY).set(false))
                     .add(ScalarSection.builder(TargetShardSizeSection.KEY).set(500))
                     .add(
                         ScalarSection.builder(BazelBinarySection.KEY)
                             .set(new File("/bazel/path/override")))
+                    .add(
+                        ScalarSection.builder(BuildConfigSection.KEY)
+                            .set(new WorkspacePath("test")))
+                    .add(ScalarSection.builder(UseExclusionPatternsSection.KEY).set(false))
+                    .add(ScalarSection.builder(ViewProjectRootSection.KEY).set(false))
                     .build())
             .build();
 

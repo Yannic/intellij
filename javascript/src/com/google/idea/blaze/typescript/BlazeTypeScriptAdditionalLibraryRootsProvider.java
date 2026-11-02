@@ -22,7 +22,6 @@ import com.google.common.io.Files;
 import com.google.idea.blaze.base.command.buildresult.OutputArtifactResolver;
 import com.google.idea.blaze.base.ideinfo.ArtifactLocation;
 import com.google.idea.blaze.base.ideinfo.TargetIdeInfo;
-import com.google.idea.blaze.base.ideinfo.TsIdeInfo;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.primitives.LanguageClass;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
@@ -70,7 +69,7 @@ public final class BlazeTypeScriptAdditionalLibraryRootsProvider
 
   static ImmutableList<File> getLibraryFiles(
       Project project, BlazeProjectData projectData, ImportRoots importRoots) {
-    if (!projectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.TYPESCRIPT)) {
+    if (!projectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.TYPESCRIPT)) {
       return ImmutableList.of();
     }
     return Stream.concat(
@@ -81,11 +80,10 @@ public final class BlazeTypeScriptAdditionalLibraryRootsProvider
 
   private static Stream<File> filesFromTargetMap(
       Project project, BlazeProjectData projectData, ImportRoots importRoots) {
-    ArtifactLocationDecoder decoder = projectData.getArtifactLocationDecoder();
-    return projectData.getTargetMap().targets().stream()
+    ArtifactLocationDecoder decoder = projectData.artifactLocationDecoder();
+    return projectData.targetMap().targets().stream()
         .filter(t -> t.getTsIdeInfo() != null)
-        .map(TargetIdeInfo::getTsIdeInfo)
-        .map(TsIdeInfo::getSources)
+        .map(TargetIdeInfo::getSources)
         .flatMap(Collection::stream)
         .filter(BlazeTypeScriptAdditionalLibraryRootsProvider::isTypeScriptArtifact)
         .filter(location -> isExternalArtifact(importRoots, location))
@@ -113,7 +111,7 @@ public final class BlazeTypeScriptAdditionalLibraryRootsProvider
   }
 
   private static boolean isTypeScriptArtifact(ArtifactLocation location) {
-    String extension = Files.getFileExtension(location.getRelativePath());
+    String extension = Files.getFileExtension(location.relativePath());
     return TypeScriptPrefetchFileSource.getTypeScriptExtensions().contains(extension);
   }
 
@@ -121,7 +119,7 @@ public final class BlazeTypeScriptAdditionalLibraryRootsProvider
     if (!location.isSource()) {
       return true;
     }
-    WorkspacePath workspacePath = WorkspacePath.createIfValid(location.getRelativePath());
+    WorkspacePath workspacePath = WorkspacePath.createIfValid(location.relativePath());
     return workspacePath == null || !importRoots.containsWorkspacePath(workspacePath);
   }
 

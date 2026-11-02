@@ -16,8 +16,10 @@
 package com.google.idea.common.experiments;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.idea.common.util.MorePlatformUtils;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.ApplicationComponent;
 import com.intellij.openapi.diagnostic.Logger;
@@ -28,8 +30,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
+import kotlinx.coroutines.CoroutineScope;
+
 
 /**
  * An experiment service that delegates to {@link ExperimentLoader ExperimentLoaders}, in a specific
@@ -38,36 +43,39 @@ import javax.annotation.Nullable;
  * <p>It will check system properties first, then an experiment file in the user's home directory,
  * then finally all files specified by the system property blaze.experiments.file.
  */
-public class ExperimentServiceImpl implements ApplicationComponent, ExperimentService {
+public class ExperimentServiceImpl implements ExperimentService {
+
   private static final Logger logger = Logger.getInstance(ExperimentServiceImpl.class);
 
   private static final Duration REFRESH_FREQUENCY = Duration.ofMinutes(5);
 
-  private final Alarm alarm =
-      new Alarm(ThreadToUse.POOLED_THREAD, ApplicationManager.getApplication());
+  private final Alarm alarm;
   private final List<ExperimentLoader> services;
+  private final Supplier<String> channelSupplier;
   private final AtomicInteger experimentScopeCounter = new AtomicInteger(0);
 
   private volatile Map<String, String> experiments = ImmutableMap.of();
+  private volatile Map<String, List<ExperimentValue>> overrides = ImmutableMap.of();
   private final Map<String, Experiment> queriedExperiments = new ConcurrentHashMap<>();
 
   ExperimentServiceImpl() {
-    this(ExperimentLoader.EP_NAME.getExtensions());
+    this(MorePlatformUtils::getIdeChannel, ExperimentLoader.EP_NAME.getExtensions());
   }
 
   @VisibleForTesting
-  ExperimentServiceImpl(ExperimentLoader... loaders) {
+  ExperimentServiceImpl(Supplier<String> channelSupplier, ExperimentLoader... loaders) {
     services = ImmutableList.copyOf(loaders);
+    this.channelSupplier = Suppliers.memoize(channelSupplier::get);
+    // Bypass unregistered application service AlarmSharedCoroutineScopeHolder. It's a private service which hard to mock
+    this.alarm = new Alarm(ThreadToUse.POOLED_THREAD, ApplicationManager.getApplication()); // #api242 revert this commit
     if (ApplicationManager.getApplication().isUnitTestMode()) {
       refreshExperiments();
     }
-  }
 
-  @Override
-  public void initComponent() {
     if (!ApplicationManager.getApplication().isUnitTestMode()) {
       services.forEach(ExperimentLoader::initialize);
     }
+
     // refresh experiments synchronously; some callers require a valid initial state on startup
     refreshExperiments();
 
@@ -75,9 +83,17 @@ public class ExperimentServiceImpl implements ApplicationComponent, ExperimentSe
     scheduleRefresh(REFRESH_FREQUENCY);
   }
 
+  @Nullable
   private String getExperiment(Experiment experiment) {
     queriedExperiments.putIfAbsent(experiment.getKey(), experiment);
-    return experiments.get(ExperimentNameHashes.hashExperimentName(experiment.getKey()));
+    if (experiments.containsKey(experiment.getKey())) {
+      return experiments.get(experiment.getKey());
+    }
+    String channelKey = channelSupplier.get() + "." + experiment.getKey();
+    if (experiments.containsKey(channelKey)) {
+      return experiments.get(channelKey);
+    }
+    return null;
   }
 
   @Override
@@ -96,7 +112,7 @@ public class ExperimentServiceImpl implements ApplicationComponent, ExperimentSe
   public int getExperimentInt(Experiment experiment, int defaultValue) {
     String property = getExperiment(experiment);
     try {
-      return property != null ? Integer.parseInt(property) : defaultValue;
+      return property != null ? Integer.parseInt(property.trim()) : defaultValue;
     } catch (NumberFormatException e) {
       logger.warn("Could not parse int for experiment: " + experiment.getKey(), e);
       return defaultValue;
@@ -146,15 +162,35 @@ public class ExperimentServiceImpl implements ApplicationComponent, ExperimentSe
   }
 
   private void refreshExperiments() {
-    experiments =
+    List<ExperimentValue> values =
         services.stream()
-            .flatMap(service -> service.getExperiments().entrySet().stream())
+            .flatMap(
+                service ->
+                    service.getExperiments().entrySet().stream()
+                        .map(
+                            e -> ExperimentValue.create(service.getId(), e.getKey(), e.getValue())))
+            .collect(Collectors.toUnmodifiableList());
+
+    experiments =
+        values.stream()
             .collect(
-                Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (first, second) -> first));
+                Collectors.toUnmodifiableMap(
+                    ExperimentValue::key, ExperimentValue::value, (first, second) -> first));
+
+    overrides =
+        ImmutableMap.copyOf(
+            values.stream()
+                .collect(
+                    Collectors.groupingBy(ExperimentValue::key, Collectors.toUnmodifiableList())));
   }
 
   @Override
   public ImmutableMap<String, Experiment> getAllQueriedExperiments() {
     return ImmutableMap.copyOf(queriedExperiments);
+  }
+
+  @Override
+  public List<ExperimentValue> getOverrides(String key) {
+    return overrides.get(key);
   }
 }

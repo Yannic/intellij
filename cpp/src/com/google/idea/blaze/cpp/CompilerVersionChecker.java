@@ -15,6 +15,8 @@
  */
 package com.google.idea.blaze.cpp;
 
+import com.intellij.openapi.application.ApplicationManager;
+import com.google.common.collect.ImmutableMap;
 import com.intellij.openapi.components.ServiceManager;
 import java.io.File;
 
@@ -22,7 +24,7 @@ import java.io.File;
 public interface CompilerVersionChecker {
 
   static CompilerVersionChecker getInstance() {
-    return ServiceManager.getService(CompilerVersionChecker.class);
+    return ApplicationManager.getApplication().getService(CompilerVersionChecker.class);
   }
 
   /** Indicates failure to check compiler version */
@@ -44,5 +46,6 @@ public interface CompilerVersionChecker {
   }
 
   /** Returns the compiler's version string */
-  String checkCompilerVersion(File executionRoot, File cppExecutable) throws VersionCheckException;
+  String checkCompilerVersion(
+      File executionRoot, File cppExecutable, ImmutableMap<String, String> checkerEnv) throws VersionCheckException;
 }

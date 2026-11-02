@@ -1,0 +1,98 @@
+/*
+ * Copyright 2026 The Bazel Authors. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.google.idea.blaze.base.buildview.events
+
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.Aborted.AbortReason
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId
+import com.google.idea.blaze.base.buildview.IssueReportingMode
+import com.google.idea.blaze.base.scope.output.IssueOutput
+import com.intellij.build.events.MessageEvent
+
+private fun <T> reportMissingImplementation(id: BuildEventId): T? {
+  LOG.error("missing implementation: $id")
+  return null
+}
+
+class AbortedParser : BuildEventParser {
+  private fun getDescription(id: BuildEventId): String? {
+    return when {
+      id.hasUnconfiguredLabel() -> "could not find label: ${id.unconfiguredLabel.label} - make sure a label or a file with that name exists"
+      id.hasTargetConfigured() -> "could not configure target: ${id.targetConfigured.label}"
+      id.hasTargetCompleted() -> "could not complete target: ${id.targetCompleted.label}"
+      id.hasConfiguredLabel() -> null
+      else -> reportMissingImplementation(id)
+    }
+  }
+
+  private fun getChildDescription(id: BuildEventId): String? {
+    return when {
+      id.hasUnconfiguredLabel() -> "depends on undefined label: ${id.unconfiguredLabel.label} - might not be a direct dependency"
+      id.hasConfiguredLabel() -> null
+      else -> reportMissingImplementation(id)
+    }
+  }
+
+  private fun buildDescription(event: BuildEvent): String? {
+    val builder = StringBuilder()
+
+    if (event.aborted.description.isNotBlank()) {
+      builder.append(event.aborted.description)
+    } else {
+      builder.append(getDescription(event.id) ?: return null)
+    }
+    builder.append("\n\n")
+
+    for (child in event.childrenList) {
+      val description = getChildDescription(child) ?: return null
+
+      builder.append(description)
+      builder.append("\n")
+    }
+
+    return builder.toString().trimEnd()
+  }
+
+  private fun getLabel(id: BuildEventId): String? {
+    return when {
+      id.hasTargetConfigured() -> id.targetConfigured.label
+      id.hasTargetCompleted() -> id.targetCompleted.label
+      id.hasUnconfiguredLabel() -> id.unconfiguredLabel.label
+      id.hasConfiguredLabel() -> id.configuredLabel.label
+      id.hasPattern() -> id.pattern.patternList.firstOrNull()
+      id.hasUnstructuredCommandLine() -> null
+      id.hasBuildFinished() -> null
+      else -> reportMissingImplementation(id)
+    }
+  }
+
+	override fun parse(event: BuildEvent, issueReportingMode: IssueReportingMode): IssueOutput? {
+		if (!event.hasAborted()) return null
+
+		// do not report skipped targets, this event is expected because sync is executed with `--skip_incompatible_explicit_targets`
+		if (event.aborted.reason == AbortReason.SKIPPED) return null
+
+		val label = getLabel(event.id) ?: return null
+		val issue = BazelBuildIssue(
+			label = label,
+			title = "${event.aborted.reason}: $label",
+			description = buildDescription(event) ?: return null,
+		)
+
+		return IssueOutput(issue, MessageEvent.Kind.ERROR)
+	}
+}

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2026 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,10 +22,11 @@ import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 /** Provides the bazel build system name string. */
 public class BazelBuildSystemProvider implements BuildSystemProvider {
 
-  private static final String BAZEL_DOC_SITE = "https://ij.bazel.build/docs";
+  private static final String BAZEL_DOC_SITE = "https://github.com/bazelbuild/intellij/blob/master/docs/index.md";
 
   private static final ImmutableList<String> BUILD_FILE_NAMES =
       ImmutableList.of("BUILD.bazel", "BUILD");
+  private static final String MODULE_FILE_NAME = "MODULE.bazel";
 
   private final BuildSystem buildSystem = new BazelBuildSystem();
 
@@ -69,6 +70,16 @@ public class BazelBuildSystemProvider implements BuildSystemProvider {
 
   @Override
   public ImmutableList<String> possibleWorkspaceFileNames() {
-    return ImmutableList.of("WORKSPACE", "WORKSPACE.bazel");
+    return ImmutableList.of("WORKSPACE", "WORKSPACE.bazel", "WORKSPACE.bzlmod");
+  }
+
+  @Override
+  public ImmutableList<String> possibleModuleFileNames() {
+    return ImmutableList.of(MODULE_FILE_NAME);
+  }
+
+  @Override
+  public ImmutableList<String> possibleModuleFileNameWildcards() {
+    return ImmutableList.of("*." + MODULE_FILE_NAME);
   }
 }

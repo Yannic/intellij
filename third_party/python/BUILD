@@ -1,4 +1,5 @@
-load("//intellij_platform_sdk:build_defs.bzl", "select_for_plugin_api")
+load("@rules_java//java:java_library.bzl", "java_library")
+load("//intellij_platform_sdk:build_defs.bzl", "select_for_version")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -7,51 +8,17 @@ licenses(["notice"])
 java_library(
     name = "python_internal",
     visibility = ["//visibility:private"],
-    exports = select_for_plugin_api({
-        "intellij-2021.3": ["@python_2021_3//:python"],
-        "intellij-ue-2021.3": ["@python_2021_3//:python"],
-        "intellij-2022.1": ["@python_2022_1//:python"],
-        "intellij-ue-2022.1": ["@python_2022_1//:python"],
-        "intellij-2022.2": ["@python_2022_2//:python"],
-        "intellij-ue-2022.2": ["@python_2022_2//:python"],
-        "intellij-2022.3": ["@python_2022_3//:python"],
-        "intellij-ue-2022.3": ["@python_2022_3//:python"],
-        "intellij-2023.1": ["@python_2023_1//:python"],
-        "intellij-ue-2023.1": ["@python_2023_1//:python"],
-        "clion-2021.3": ["@clion_2021_3//:python"],
-        "clion-2022.1": ["@clion_2022_1//:python"],
-        "clion-2022.2": ["@clion_2022_2//:python"],
-        "clion-2022.3": ["@clion_2022_3//:python"],
-        "clion-2023.1": ["@clion_2023_1//:python"],
-        "android-studio-2021.3": ["@python_2021_3//:python"],
-        "android-studio-2022.1": ["@python_2022_1//:python"],
-        "android-studio-2022.2": ["@python_2022_2//:python"],
-        "android-studio-dev": ["@python_asdev//:python"],
+    exports = select_for_version({
+        "2026.2": ["@python_2026_2//:python"],
+        "2026.3": ["@python_2026_3//:python"],
     }),
 )
 
 filegroup(
     name = "python_helpers",
-    srcs = select_for_plugin_api({
-        "intellij-2021.3": ["@python_2021_3//:python_helpers"],
-        "intellij-ue-2021.3": ["@python_2021_3//:python_helpers"],
-        "intellij-2022.1": ["@python_2022_1//:python_helpers"],
-        "intellij-ue-2022.1": ["@python_2022_1//:python_helpers"],
-        "intellij-2022.2": ["@python_2022_2//:python_helpers"],
-        "intellij-ue-2022.2": ["@python_2022_2//:python_helpers"],
-        "intellij-2022.3": ["@python_2022_3//:python_helpers"],
-        "intellij-ue-2022.3": ["@python_2022_3//:python_helpers"],
-        "intellij-2023.1": ["@python_2023_1//:python_helpers"],
-        "intellij-ue-2023.1": ["@python_2023_1//:python_helpers"],
-        "clion-2021.3": ["@clion_2021_3//:python_helpers"],
-        "clion-2022.1": ["@clion_2022_1//:python_helpers"],
-        "clion-2022.2": ["@clion_2022_2//:python_helpers"],
-        "clion-2022.3": ["@clion_2022_3//:python_helpers"],
-        "clion-2023.1": ["@clion_2023_1//:python_helpers"],
-        "android-studio-2021.3": ["@python_2021_3//:python_helpers"],
-        "android-studio-2022.1": ["@python_2022_1//:python_helpers"],
-        "android-studio-2022.2": ["@python_2022_2//:python_helpers"],
-        "android-studio-dev": ["@python_asdev//:python_helpers"],
+    srcs = select_for_version({
+        "2026.2": ["@python_2026_2//:python_helpers"],
+        "2026.3": ["@python_2026_3//:python_helpers"],
     }),
     visibility = ["//visibility:private"],
 )

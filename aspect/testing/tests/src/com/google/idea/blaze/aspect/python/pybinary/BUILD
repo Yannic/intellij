@@ -1,3 +1,5 @@
+load("@rules_java//java:defs.bzl", "java_test")
+load("@rules_python//python:defs.bzl", "py_binary")
 load(
     "//aspect/testing/rules:intellij_aspect_test_fixture.bzl",
     "intellij_aspect_test_fixture",
@@ -91,7 +93,7 @@ java_test(
         "//aspect/testing:BazelIntellijAspectTest",
         "//aspect/testing/rules:intellij_aspect_test_fixture_java_proto",
         "//intellij_platform_sdk:test_libs",
-        "//proto:intellij_ide_info_java_proto",
-        "@junit//jar",
+        "//proto:proto_deps",
+        "//third_party/java/junit",
     ],
 )

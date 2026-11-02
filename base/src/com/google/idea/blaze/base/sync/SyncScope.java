@@ -35,6 +35,10 @@ public final class SyncScope {
   public static class SyncFailedException extends Exception {
     public SyncFailedException() {}
 
+    public SyncFailedException(String message) {
+      super(message);
+    }
+
     public SyncFailedException(String message, Throwable cause) {
       super(message, cause);
     }
@@ -107,7 +111,7 @@ public final class SyncScope {
       logger.error(e);
       throw e;
     } finally {
-      context.endScope();
+      context.close();
     }
   }
 }

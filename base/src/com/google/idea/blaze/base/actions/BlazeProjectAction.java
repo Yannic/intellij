@@ -15,12 +15,8 @@
  */
 package com.google.idea.blaze.base.actions;
 
-import static com.google.idea.blaze.base.actions.BlazeProjectAction.QuerySyncStatus.HIDDEN;
-import static com.google.idea.blaze.base.actions.BlazeProjectAction.QuerySyncStatus.SUPPORTED;
-
-import com.google.idea.blaze.base.qsync.QuerySync;
 import com.google.idea.blaze.base.settings.Blaze;
-import com.google.idea.blaze.base.settings.BuildSystemName;
+import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.project.Project;
@@ -30,6 +26,7 @@ import javax.swing.Icon;
 /** Base class action that hides for non-blaze projects. */
 public abstract class BlazeProjectAction extends AnAction {
   /** Indicates if an action supports querysync. */
+  @Deprecated
   protected enum QuerySyncStatus {
     /**
      * The action does not support querysync, and is not ever expected to. It's not visible in the
@@ -43,6 +40,8 @@ public abstract class BlazeProjectAction extends AnAction {
     DISABLED,
     /** The action supports querysync and is available in the UI. */
     SUPPORTED,
+    /** The action requires querysync in order to be usable. */
+    REQUIRED,
   }
 
   protected BlazeProjectAction() {}
@@ -62,28 +61,18 @@ public abstract class BlazeProjectAction extends AnAction {
 
   @Override
   public final void update(AnActionEvent e) {
-    Project project = e.getProject();
-    if (project == null || !Blaze.isBlazeProject(project)) {
+    if (querySyncSupport() == QuerySyncStatus.REQUIRED) {
       e.getPresentation().setEnabledAndVisible(false);
       return;
     }
-    if (QuerySync.isEnabled() && querySyncSupport() == HIDDEN) {
+
+    final var project = e.getProject();
+    if (project == null || !Blaze.isBlazeProject(project)) {
       e.getPresentation().setEnabledAndVisible(false);
       return;
     }
 
     e.getPresentation().setEnabledAndVisible(true);
-
-    if (!compatibleBuildSystem(project)) {
-      e.getPresentation().setEnabled(false);
-      return;
-    }
-    if (QuerySync.isEnabled() && querySyncSupport() != SUPPORTED) {
-      // TODO(b/260643753) disabling all blaze actions for querysync is way too broad, instead we
-      //  should investigate which can be supported and update them accordingly.
-      e.getPresentation().setEnabled(false);
-      return;
-    }
 
     updateForBlazeProject(project, e);
   }
@@ -97,25 +86,20 @@ public abstract class BlazeProjectAction extends AnAction {
     actionPerformedInBlazeProject(project, anActionEvent);
   }
 
+  /**
+   * Query sync support is deprecated. Do not override this method anymore.
+   */
+  @Deprecated
   protected QuerySyncStatus querySyncSupport() {
-    // Default to disabled, meaning that the action has not yet been updated for querysync.
     return QuerySyncStatus.DISABLED;
   }
 
   protected void updateForBlazeProject(Project project, AnActionEvent e) {}
 
+  @Override
+  public ActionUpdateThread getActionUpdateThread() {
+    return ActionUpdateThread.BGT;
+  }
+
   protected abstract void actionPerformedInBlazeProject(Project project, AnActionEvent e);
-
-  private boolean compatibleBuildSystem(Project project) {
-    BuildSystemName requiredBuildSystemName = requiredBuildSystem();
-    if (requiredBuildSystemName == null) {
-      return true;
-    }
-    return Blaze.getBuildSystemName(project) == requiredBuildSystemName;
-  }
-
-  @Nullable
-  protected BuildSystemName requiredBuildSystem() {
-    return null;
-  }
 }

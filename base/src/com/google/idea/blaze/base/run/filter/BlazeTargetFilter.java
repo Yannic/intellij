@@ -23,6 +23,7 @@ import com.google.idea.blaze.base.model.primitives.Label;
 import com.google.idea.blaze.base.settings.Blaze;
 import com.intellij.execution.filters.ConsoleFilterProvider;
 import com.intellij.execution.filters.Filter;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.markup.EffectType;
 import com.intellij.openapi.editor.markup.TextAttributes;
 import com.intellij.openapi.project.Project;
@@ -40,9 +41,9 @@ import javax.annotation.Nullable;
 /** Parse blaze targets in streamed output. */
 public class BlazeTargetFilter implements Filter {
 
-  // See Bazel's LabelValidator class. Whitespace character intentionally not included here.
-  private static final String PACKAGE_NAME_CHARS = "a-zA-Z0-9/\\-\\._$()";
-  private static final String TARGET_CHARS = "a-zA-Z0-9+,=~#()$_@\\-/";
+  // See Bazel's LabelValidator class. Whitespace character and ' intentionally not included here.
+  private static final String PACKAGE_NAME_CHARS = "a-zA-Z0-9/\\-\\._$()@";
+  private static final String TARGET_CHARS = "a-zA-Z0-9!%@^_\"#$&()*\\-+,;<=>?\\[\\]{|}~/\\.";
 
   // ignore '//' preceded by text (e.g. https://...)
   // format: ([@external_workspace]//package:rule)
@@ -63,13 +64,13 @@ public class BlazeTargetFilter implements Filter {
       int prefixLength = Optional.ofNullable(matcher.group(1)).map(String::length).orElse(0);
 
       String labelString = matcher.group().substring(prefixLength);
-      Label label = LabelUtils.createLabelFromString(/* blazePackage= */ null, labelString);
-      if (label == null) {
-        continue;
-      }
       // for performance reasons, don't resolve until the user clicks the link
       NonProblemHyperlinkInfo link =
           project -> {
+            Label label = LabelUtils.createLabelFromString(/* blazePackage= */ null, labelString);
+            if (label == null) {
+              Logger.getInstance(this.getClass()).error(new IllegalStateException("Parsing returned illegal label: " + labelString));
+            }
             PsiElement psi = BuildReferenceManager.getInstance(project).resolveLabel(label);
             if (psi instanceof NavigatablePsiElement) {
               ((NavigatablePsiElement) psi).navigate(true);

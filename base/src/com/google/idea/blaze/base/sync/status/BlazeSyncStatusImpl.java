@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class BlazeSyncStatusImpl implements BlazeSyncStatus {
 
+  private final Project project;
+
   public static BlazeSyncStatusImpl getImpl(Project project) {
     return (BlazeSyncStatusImpl) BlazeSyncStatus.getInstance(project);
   }
@@ -34,6 +36,7 @@ public class BlazeSyncStatusImpl implements BlazeSyncStatus {
 
   public BlazeSyncStatusImpl(Project project) {
     this.stateManager = BlazeSyncStatusStateManager.getInstance(project);
+    this.project = project;
   }
 
   @Override

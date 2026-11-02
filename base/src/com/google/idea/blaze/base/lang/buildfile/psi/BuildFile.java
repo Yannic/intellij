@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2026 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,9 +30,10 @@ import com.intellij.psi.PsiNamedElement;
 import com.intellij.util.PathUtil;
 import com.intellij.util.Processor;
 import icons.BlazeIcons;
-import java.io.File;
+
 import javax.annotation.Nullable;
-import javax.swing.Icon;
+import javax.swing.*;
+import java.io.File;
 
 /** Build file PSI element */
 public class BuildFile extends PsiFileBase implements BuildElement, DocStringOwner {
@@ -42,6 +43,7 @@ public class BuildFile extends PsiFileBase implements BuildElement, DocStringOwn
     SkylarkExtension,
     BuildPackage, // "BUILD", "BUILD.bazel"
     Workspace, // the top-level WORKSPACE file
+    MODULE, // the top-level MODULE.bazel file
   }
 
   public static String getBuildFileString(Project project, String filePath) {
@@ -64,11 +66,25 @@ public class BuildFile extends PsiFileBase implements BuildElement, DocStringOwn
 
   public BlazeFileType getBlazeFileType() {
     String fileName = getFileName();
+    switch (fileName) {
+      case "BUILD":
+        return BlazeFileType.BuildPackage;
+      case "WORKSPACE":
+        return BlazeFileType.Workspace;
+      case "MODULE.bazel":
+        return BlazeFileType.MODULE;
+      case "SkylarkExtension":
+        return BlazeFileType.SkylarkExtension;
+    }
     if (fileName.startsWith("BUILD")) {
       return BlazeFileType.BuildPackage;
     }
     if (fileName.startsWith("WORKSPACE")) {
       return BlazeFileType.Workspace;
+    }
+    // Files included in a MODULE.bazel must end with '.MODULE.bazel'
+    if (fileName.endsWith(".MODULE.bazel")) {
+      return BlazeFileType.MODULE;
     }
     return BlazeFileType.SkylarkExtension;
   }

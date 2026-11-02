@@ -32,7 +32,6 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.errorprone.annotations.Keep;
 import com.google.idea.blaze.base.async.FutureUtil;
-import com.google.idea.blaze.base.command.buildresult.BlazeArtifact;
 import com.google.idea.blaze.base.command.buildresult.RemoteOutputArtifact;
 import com.google.idea.blaze.base.ideinfo.ArtifactLocation;
 import com.google.idea.blaze.base.ideinfo.TargetIdeInfo;
@@ -52,7 +51,6 @@ import com.google.idea.blaze.base.sync.data.BlazeDataStorage;
 import com.google.idea.blaze.base.sync.projectview.WorkspaceLanguageSettings;
 import com.google.idea.common.experiments.BoolExperiment;
 import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.components.ServiceManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.io.FileUtil;
@@ -68,6 +66,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -89,7 +88,7 @@ public final class RemoteOutputsCache {
       new BoolExperiment("blaze.base.filecache.remoteOutputsCache.sha256.enable", true);
 
   public static RemoteOutputsCache getInstance(Project project) {
-    return ServiceManager.getService(project, RemoteOutputsCache.class);
+    return project.getService(RemoteOutputsCache.class);
   }
 
   private static final Logger logger = Logger.getInstance(RemoteOutputsCache.class);
@@ -182,12 +181,12 @@ public final class RemoteOutputsCache {
         }
       }
       ImmutableList<RemoteOutputArtifact> artifactsToDownload =
-          BlazeArtifact.getRemoteArtifacts(updatedOutputs.values());
+          RemoteOutputArtifact.getRemoteArtifacts(updatedOutputs.values());
       ListenableFuture<?> downloadArtifactsFuture =
           RemoteArtifactPrefetcher.getInstance()
               .downloadArtifacts(
                   /* projectName= */ project.getName(), /* outputArtifacts= */ artifactsToDownload);
-      logger.info(String.format("Prefetching %d output artifacts", artifactsToDownload.size()));
+      logger.info(String.format(Locale.ROOT, "Prefetching %d output artifacts", artifactsToDownload.size()));
       FutureUtil.waitForFuture(context, downloadArtifactsFuture)
           .timed("PrefetchRemoteOutput", EventType.Prefetching)
           .withProgressMessage("Prefetching output artifacts...")
@@ -226,7 +225,7 @@ public final class RemoteOutputsCache {
    */
   @VisibleForTesting
   static String getCacheKey(RemoteOutputArtifact output) {
-    String key = output.getKey();
+    String key = output.getBazelOutRelativePath();
     String fileName = PathUtil.getFileName(key);
     List<String> components = Splitter.on('.').limit(2).splitToList(fileName);
     StringBuilder builder =

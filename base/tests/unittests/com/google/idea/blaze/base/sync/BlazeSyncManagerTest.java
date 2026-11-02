@@ -26,8 +26,10 @@ import com.google.common.collect.Sets;
 import com.google.idea.blaze.base.BlazeTestCase;
 import com.google.idea.blaze.base.bazel.BazelBuildSystemProvider;
 import com.google.idea.blaze.base.bazel.BuildSystemProvider;
+import com.google.idea.blaze.base.command.info.BlazeInfo;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.BlazeVersionData;
+import com.google.idea.blaze.base.model.ExternalWorkspaceData;
 import com.google.idea.blaze.base.model.MockBlazeProjectDataBuilder;
 import com.google.idea.blaze.base.model.primitives.LanguageClass;
 import com.google.idea.blaze.base.model.primitives.TargetExpression;
@@ -73,7 +75,7 @@ public class BlazeSyncManagerTest extends BlazeTestCase {
 
     doNothing().when(manager).requestProjectSync(any());
     projectServices.register(BlazeSyncManager.class, manager);
-    assertThat(BlazeSyncManager.getInstance(project)).isSameAs(manager);
+    assertThat(BlazeSyncManager.getInstance(project)).isSameInstanceAs(manager);
   }
 
   @Override
@@ -91,8 +93,6 @@ public class BlazeSyncManagerTest extends BlazeTestCase {
     assertThat(params.syncMode()).isEqualTo(SyncMode.FULL);
     assertThat(params.backgroundSync()).isFalse();
     assertThat(params.addProjectViewTargets()).isTrue();
-    assertThat(params.addWorkingSet())
-        .isEqualTo(BlazeUserSettings.getInstance().getExpandSyncToWorkingSet());
     assertThat(params.targetExpressions()).isEmpty();
   }
 
@@ -106,8 +106,6 @@ public class BlazeSyncManagerTest extends BlazeTestCase {
     assertThat(params.syncMode()).isEqualTo(SyncMode.INCREMENTAL);
     assertThat(params.backgroundSync()).isFalse();
     assertThat(params.addProjectViewTargets()).isTrue();
-    assertThat(params.addWorkingSet())
-        .isEqualTo(BlazeUserSettings.getInstance().getExpandSyncToWorkingSet());
     assertThat(params.targetExpressions()).isEmpty();
   }
 
@@ -125,22 +123,7 @@ public class BlazeSyncManagerTest extends BlazeTestCase {
     assertThat(params.syncMode()).isEqualTo(SyncMode.PARTIAL);
     assertThat(params.backgroundSync()).isFalse();
     assertThat(params.addProjectViewTargets()).isFalse();
-    assertThat(params.addWorkingSet()).isFalse();
     assertThat(params.targetExpressions()).containsExactlyElementsIn(targets);
-  }
-
-  @Test
-  public void testWorkingSetSync() {
-    manager.workingSetSync(/* reason= */ "test");
-    verify(manager).requestProjectSync(paramsCaptor.capture());
-    BlazeSyncParams params = paramsCaptor.getValue();
-    assertThat(params).isNotNull();
-    assertThat(params.title()).isEqualTo("Sync Working Set");
-    assertThat(params.syncMode()).isEqualTo(SyncMode.PARTIAL);
-    assertThat(params.backgroundSync()).isFalse();
-    assertThat(params.addProjectViewTargets()).isFalse();
-    assertThat(params.addWorkingSet()).isTrue();
-    assertThat(params.targetExpressions()).isEmpty();
   }
 
   @Test
@@ -154,7 +137,7 @@ public class BlazeSyncManagerTest extends BlazeTestCase {
     assertThat(
             manager.shouldForceFullSync(projectData, projectState, SyncMode.INCREMENTAL, context))
         .isFalse();
-    context.endScope();
+    context.close();
   }
 
   @Test
@@ -168,7 +151,7 @@ public class BlazeSyncManagerTest extends BlazeTestCase {
     assertThat(
             manager.shouldForceFullSync(projectData, projectState, SyncMode.INCREMENTAL, context))
         .isTrue();
-    context.endScope();
+    context.close();
   }
 
   @Test
@@ -181,7 +164,7 @@ public class BlazeSyncManagerTest extends BlazeTestCase {
     assertThat(
             manager.shouldForceFullSync(projectData, projectState, SyncMode.INCREMENTAL, context))
         .isFalse();
-    context.endScope();
+    context.close();
   }
 
   private SyncProjectState getMockProjectStateWithLanguages(
@@ -190,8 +173,15 @@ public class BlazeSyncManagerTest extends BlazeTestCase {
         .setLanguageSettings(new WorkspaceLanguageSettings(WorkspaceType.ANDROID, activeLanguages))
         .setProjectViewSet(MockProjectViewManager.getInstance(project).getProjectViewSet())
         .setBlazeVersionData(BlazeVersionData.builder().build())
+        .setBlazeInfo(
+            BlazeInfo.createMockBlazeInfo(
+                "/",
+                "/root",
+                "/root/out/bin",
+                "/root/out/gen"))
         .setWorkspacePathResolver(
             new WorkspacePathResolverImpl(WorkspaceRoot.fromProjectSafe(project)))
+        .setExternalWorkspaceData(ExternalWorkspaceData.EMPTY)
         .build();
   }
 
@@ -215,11 +205,10 @@ public class BlazeSyncManagerTest extends BlazeTestCase {
       return ProjectViewSet.builder().build();
     }
 
-    @Nullable
     @Override
     public ProjectViewSet reloadProjectView(
         BlazeContext context, WorkspacePathResolver workspacePathResolver) {
-      return ProjectViewSet.builder().build();
+      return ProjectViewSet.EMPTY;
     }
   }
 }

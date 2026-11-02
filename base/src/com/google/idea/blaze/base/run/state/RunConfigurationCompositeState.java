@@ -17,6 +17,7 @@ package com.google.idea.blaze.base.run.state;
 
 import com.google.common.collect.ImmutableList;
 import com.google.idea.blaze.base.ui.UiUtil;
+import com.intellij.openapi.actionSystem.DataContext;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.InvalidDataException;
 import com.intellij.openapi.util.WriteExternalException;
@@ -46,11 +47,22 @@ public abstract class RunConfigurationCompositeState implements RunConfiguration
   }
 
   @Override
+  public final void readContext(DataContext context) throws InvalidDataException {
+    for (RunConfigurationState state : getStates()) {
+      state.readContext(context);
+    }
+  }
+
+  @Override
   public final void readExternal(Element element) throws InvalidDataException {
+    migrate(element);
     for (RunConfigurationState state : getStates()) {
       state.readExternal(element);
     }
   }
+
+  /** Hook for subclasses to migrate legacy XML representations before substates are read. */
+  protected void migrate(Element element) {}
 
   /** Updates the element with the handler's state. */
   @Override
@@ -70,8 +82,7 @@ public abstract class RunConfigurationCompositeState implements RunConfiguration
   static class RunConfigurationCompositeStateEditor implements RunConfigurationStateEditor {
     List<RunConfigurationStateEditor> editors;
 
-    public RunConfigurationCompositeStateEditor(
-        Project project, List<RunConfigurationState> states) {
+    public RunConfigurationCompositeStateEditor(Project project, List<RunConfigurationState> states) {
       editors = states.stream().map(state -> state.getEditor(project)).collect(Collectors.toList());
     }
 

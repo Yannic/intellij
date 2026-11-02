@@ -25,7 +25,6 @@ import com.google.idea.blaze.base.ideinfo.TargetKey;
 import com.google.idea.blaze.base.ideinfo.TargetMap;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
-import com.intellij.openapi.components.ServiceManager;
 import com.intellij.openapi.project.Project;
 import java.util.Collection;
 import java.util.HashSet;
@@ -40,7 +39,7 @@ public class TransitiveDependencyMap {
   private final Project project;
 
   public static TransitiveDependencyMap getInstance(Project project) {
-    return ServiceManager.getService(project, TransitiveDependencyMap.class);
+    return project.getService(TransitiveDependencyMap.class);
   }
 
   public TransitiveDependencyMap(Project project) {
@@ -60,7 +59,7 @@ public class TransitiveDependencyMap {
       return false;
     }
 
-    return getTransitiveDependenciesStream(possibleDependent, blazeProjectData.getTargetMap())
+    return getTransitiveDependenciesStream(possibleDependent, blazeProjectData.targetMap())
         .anyMatch(possibleDependency::equals);
   }
 
@@ -79,7 +78,7 @@ public class TransitiveDependencyMap {
       return ImmutableSet.of();
     }
     ImmutableSet<TargetKey> possibleDepsSet = ImmutableSet.copyOf(possibleDependencies);
-    return getTransitiveDependenciesStream(possibleDependent, blazeProjectData.getTargetMap())
+    return getTransitiveDependenciesStream(possibleDependent, blazeProjectData.targetMap())
         .filter(possibleDepsSet::contains)
         .distinct()
         .limit(possibleDepsSet.size())
@@ -93,7 +92,7 @@ public class TransitiveDependencyMap {
       return ImmutableSet.of();
     }
     // TODO: see if we need caching.
-    return getTransitiveDependencies(targetKey, blazeProjectData.getTargetMap());
+    return getTransitiveDependencies(targetKey, blazeProjectData.targetMap());
   }
 
   public static ImmutableCollection<TargetKey> getTransitiveDependencies(
@@ -154,7 +153,7 @@ public class TransitiveDependencyMap {
 
       return target.getDependencies().stream()
           .map(Dependency::getTargetKey)
-          .map(TargetKey::getLabel)
+          .map(TargetKey::label)
           .map(TargetKey::forPlainTarget);
     }
 

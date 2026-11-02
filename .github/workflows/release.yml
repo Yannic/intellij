@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version'
+        required: true
+        type: string
+      eap:
+        description: 'EAP build (only release clion-oss-under-dev)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      actions: write
+
+    strategy:
+      matrix:
+        # if EAP is true -> ["clion-oss-under-dev"]; else -> ["clion-oss-latest-stable", "clion-oss-oldest-stable"]
+        product: ${{ fromJSON(inputs.eap && '["clion-oss-under-dev"]' || '["clion-oss-latest-stable", "clion-oss-oldest-stable"]') }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@v2.0.0
+        with:
+          tool-cache: false
+          android: false
+          large-packages: false
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.19.1
+        with:
+          bazelisk-cache: true
+          disk-cache: false
+          repository-cache: false
+
+      - name: Update version.bzl
+        run: |
+          echo "VERSION = '${INPUTS_VERSION}'" > version.bzl
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+
+      - name: Check CHANGELOG for version
+        if: ${{ !inputs.eap }} # EAP builds don't have a CHANGELOG entry
+        run: |
+          grep -qF $(echo "${INPUTS_VERSION}" | cut -d'.' -f1-3) CHANGELOG
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+
+      - name: Build Plugin Zip
+        run: bazel build //clwb:clwb_bazel_zip --define=ij_product=${MATRIX_PRODUCT}
+        env:
+          MATRIX_PRODUCT: ${{ matrix.product }}
+
+      - name: Rename Plugin Zip
+        run: |
+          bazel build //intellij_platform_sdk:build_name --define=ij_product=${MATRIX_PRODUCT}
+          mkdir out
+          mv bazel-bin/clwb/clwb_bazel.zip out/$(cat bazel-bin/intellij_platform_sdk/build_name.txt)-${INPUTS_VERSION}.zip
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+          MATRIX_PRODUCT: ${{ matrix.product }}
+
+      - name: Upload Plugin Zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.product }}
+          path: "out/*.zip"
+          retention-days: 1
+
+  gh-release:
+    permissions:
+      contents: write
+      actions: read
+
+    needs: build
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Plugin Zips
+        uses: actions/download-artifact@v8
+        with:
+          pattern: clion-oss-*
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: "*.zip"
+          # if EAP is true -> "<version>-eap"; else -> "<version>"
+          tag_name: ${{ inputs.eap && format('{0}-eap', inputs.version) || inputs.version }}
+          # if EAP is true -> "CLwB-EAP Release <version>"; else -> "CLwB Release <version>"
+          name: ${{ inputs.eap && format('CLwB-EAP Release {0}', inputs.version) || format('CLwB Release {0}', inputs.version) }}
+          draft: false
+          prerelease: ${{ inputs.eap }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  jb-release:
+    permissions:
+      contents: none
+      actions: read
+
+    needs: build
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Plugin Zips
+        uses: actions/download-artifact@v8
+        with:
+          pattern: clion-oss-*
+          merge-multiple: true
+
+      - name: Upload Releases
+        run: |
+          find . -type f -name "*.zip" -exec curl -i --header "Authorization: Bearer ${{ secrets.MARKETPLACE_TOKEN }}" -F pluginId=9554 -F file=@{} -F isHidden=true -F channel=stable https://plugins.jetbrains.com/plugin/uploadPlugin -o /dev/null \;

@@ -17,8 +17,8 @@ package com.google.idea.blaze.base.settings;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.idea.blaze.base.logging.LoggedSettingsProvider;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.PersistentStateComponent;
-import com.intellij.openapi.components.ServiceManager;
 import com.intellij.openapi.components.State;
 import com.intellij.openapi.components.Storage;
 import com.intellij.openapi.project.Project;
@@ -58,8 +58,6 @@ public class BlazeUserSettings implements PersistentStateComponent<BlazeUserSett
     }
   }
 
-  private static final String OLD_DEFAULT_BLAZE_PATH =
-      SystemInfo.isMac ? "/usr/local/bin/blaze" : "/usr/bin/blaze";
   private static final String DEFAULT_BLAZE_PATH = "blaze";
   private static final String DEFAULT_BAZEL_PATH = "bazel";
   private static final String DEFAULT_BUILDIFIER_PATH = "buildifier";
@@ -69,9 +67,12 @@ public class BlazeUserSettings implements PersistentStateComponent<BlazeUserSett
   private FocusBehavior showBlazeConsoleOnRun = FocusBehavior.ALWAYS;
   private FocusBehavior showProblemsViewOnRun = FocusBehavior.NEVER;
   private boolean syncStatusPopupShown = false;
-  private boolean expandSyncToWorkingSet = true;
   private boolean showPerformanceWarnings = false;
   private boolean collapseProjectView = true;
+  private boolean useNewSyncView = true;
+  private boolean forwardProxySettings = false;
+
+  private boolean javascriptTestrunnersEnabled = false;
 
   private boolean selectNewestChildTask = false;
   private boolean formatBuildFilesOnSave = true;
@@ -81,7 +82,7 @@ public class BlazeUserSettings implements PersistentStateComponent<BlazeUserSett
   private String buildifierBinaryPath = DEFAULT_BUILDIFIER_PATH;
 
   public static BlazeUserSettings getInstance() {
-    return ServiceManager.getService(BlazeUserSettings.class);
+    return ApplicationManager.getApplication().getService(BlazeUserSettings.class);
   }
 
   @Override
@@ -134,14 +135,6 @@ public class BlazeUserSettings implements PersistentStateComponent<BlazeUserSett
     this.syncStatusPopupShown = syncStatusPopupShown;
   }
 
-  public boolean getExpandSyncToWorkingSet() {
-    return expandSyncToWorkingSet;
-  }
-
-  public void setExpandSyncToWorkingSet(boolean expandSyncToWorkingSet) {
-    this.expandSyncToWorkingSet = expandSyncToWorkingSet;
-  }
-
   public boolean getShowPerformanceWarnings() {
     return showPerformanceWarnings;
   }
@@ -156,16 +149,6 @@ public class BlazeUserSettings implements PersistentStateComponent<BlazeUserSett
 
   public void setBlazeBinaryPath(String blazeBinaryPath) {
     this.blazeBinaryPath = StringUtil.defaultIfEmpty(blazeBinaryPath, DEFAULT_BLAZE_PATH).trim();
-  }
-
-  /** Resets the blaze binary path to its default value. */
-  public void clearBlazeBinaryPath() {
-    blazeBinaryPath = DEFAULT_BLAZE_PATH;
-  }
-
-  public boolean isDefaultBlazePath() {
-    return DEFAULT_BLAZE_PATH.equals(getBlazeBinaryPath())
-        || OLD_DEFAULT_BLAZE_PATH.equals(getBlazeBinaryPath());
   }
 
   public String getBuildifierBinaryPath() {
@@ -191,6 +174,30 @@ public class BlazeUserSettings implements PersistentStateComponent<BlazeUserSett
 
   public void setCollapseProjectView(boolean collapseProjectView) {
     this.collapseProjectView = collapseProjectView;
+  }
+
+  public boolean getUseNewSyncView() {
+    return useNewSyncView;
+  }
+
+  public void setUseNewSyncView(boolean useNewSyncView) {
+    this.useNewSyncView = useNewSyncView;
+  }
+
+  public boolean getForwardProxySettings() {
+    return forwardProxySettings;
+  }
+
+  public void setForwardProxySettings(boolean forwardProxySettings) {
+    this.forwardProxySettings = forwardProxySettings;
+  }
+
+  public boolean isJavascriptTestrunnersEnabled() {
+    return javascriptTestrunnersEnabled;
+  }
+
+  public void setJavascriptTestrunnersEnabled(boolean javascriptTestrunnersEnabled) {
+    this.javascriptTestrunnersEnabled = javascriptTestrunnersEnabled;
   }
 
   public boolean getSelectNewestChildTask() {
@@ -239,7 +246,6 @@ public class BlazeUserSettings implements PersistentStateComponent<BlazeUserSett
       builder.put("showBlazeProblemsViewOnSync", settings.showBlazeProblemsViewOnSync.name());
       builder.put("showBlazeConsoleOnRun", settings.showBlazeConsoleOnRun.name());
       builder.put("showProblemsViewOnRun", settings.showProblemsViewOnRun.name());
-      builder.put("expandSyncToWorkingSet", Boolean.toString(settings.expandSyncToWorkingSet));
       builder.put("formatBuildFilesOnSave", Boolean.toString(settings.formatBuildFilesOnSave));
       builder.put(
           "showAddFileToProjectNotification",
@@ -247,6 +253,8 @@ public class BlazeUserSettings implements PersistentStateComponent<BlazeUserSett
       builder.put("blazeBinaryPath", settings.blazeBinaryPath);
       builder.put("bazelBinaryPath", settings.bazelBinaryPath);
       builder.put("buildifierBinaryPath", settings.buildifierBinaryPath);
+      builder.put("useNewSyncView", Boolean.toString(settings.useNewSyncView));
+      builder.put("forwardProxySettings", Boolean.toString(settings.forwardProxySettings));
       return builder.build();
     }
   }

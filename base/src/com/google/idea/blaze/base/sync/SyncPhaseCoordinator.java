@@ -21,13 +21,16 @@ import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.idea.blaze.base.async.executor.ProgressiveTaskWithProgressIndicator;
 import com.google.idea.blaze.base.bazel.BuildSystem;
-import com.google.idea.blaze.base.bazel.BuildSystem.SyncStrategy;
+import com.google.idea.blaze.base.buildview.BuildViewMigration;
+import com.google.idea.blaze.base.command.buildresult.BuildResult;
+import com.google.idea.blaze.base.command.buildresult.BuildResult.Status;
 import com.google.idea.blaze.base.command.BlazeInvocationContext.ContextType;
 import com.google.idea.blaze.base.experiments.ExperimentScope;
 import com.google.idea.blaze.base.ideinfo.TargetKey;
@@ -35,12 +38,15 @@ import com.google.idea.blaze.base.issueparser.BlazeIssueParser;
 import com.google.idea.blaze.base.logging.EventLoggingService;
 import com.google.idea.blaze.base.logging.utils.BuildPhaseSyncStats;
 import com.google.idea.blaze.base.logging.utils.SyncStats;
+import com.google.idea.blaze.base.model.BlazeConfiguration;
+import com.google.idea.blaze.base.model.BlazeConfigurationData;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.ProjectTargetData;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.projectview.ProjectViewManager;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
 import com.google.idea.blaze.base.projectview.section.sections.ImportSection;
+import com.google.idea.blaze.base.projectview.section.sections.TryImportSection;
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.Scope;
 import com.google.idea.blaze.base.scope.output.IssueOutput;
@@ -60,6 +66,7 @@ import com.google.idea.blaze.base.scope.scopes.TimingScopeListener.TimedEvent;
 import com.google.idea.blaze.base.scope.scopes.ToolWindowScope;
 import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
 import com.google.idea.blaze.base.settings.BlazeUserSettings;
 import com.google.idea.blaze.base.settings.BlazeUserSettings.FocusBehavior;
@@ -67,8 +74,7 @@ import com.google.idea.blaze.base.settings.BuildBinaryType;
 import com.google.idea.blaze.base.sync.SyncScope.SyncCanceledException;
 import com.google.idea.blaze.base.sync.SyncScope.SyncFailedException;
 import com.google.idea.blaze.base.sync.aspects.BlazeBuildOutputs;
-import com.google.idea.blaze.base.sync.aspects.BuildResult;
-import com.google.idea.blaze.base.sync.aspects.BuildResult.Status;
+import com.google.idea.blaze.base.sync.aspects.storage.AspectStorageService;
 import com.google.idea.blaze.base.sync.data.BlazeDataStorage;
 import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
 import com.google.idea.blaze.base.sync.libraries.BlazeLibraryCollector;
@@ -77,18 +83,17 @@ import com.google.idea.blaze.base.toolwindow.Task;
 import com.google.idea.blaze.base.util.SaveUtil;
 import com.google.idea.blaze.common.PrintOutput;
 import com.google.idea.common.util.ConcurrencyUtil;
-import com.intellij.openapi.components.ServiceManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.project.Project;
-import com.intellij.util.concurrency.AppExecutorUtil;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Executors;
@@ -97,14 +102,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
+import kotlinx.coroutines.JobCancellationException;
 
 /** Manages sync execution, coordinating the possibly-separate build/update phases. */
-final class SyncPhaseCoordinator {
+public final class SyncPhaseCoordinator {
 
   private static final Logger logger = Logger.getInstance(SyncPhaseCoordinator.class);
 
-  static SyncPhaseCoordinator getInstance(Project project) {
-    return ServiceManager.getService(project, SyncPhaseCoordinator.class);
+  public static SyncPhaseCoordinator getInstance(Project project) {
+    return project.getService(SyncPhaseCoordinator.class);
   }
 
   private enum SyncPhase {
@@ -181,14 +187,6 @@ final class SyncPhaseCoordinator {
     }
   }
 
-  // an application-wide cap on the number of concurrent remote builds
-  private static final int MAX_BUILD_TASKS = 8;
-
-  // an application-wide executor to run concurrent blaze builds remotely
-  private static final ListeningExecutorService remoteBuildExecutor =
-      MoreExecutors.listeningDecorator(
-          AppExecutorUtil.createBoundedApplicationPoolExecutor("FetchExecutor", MAX_BUILD_TASKS));
-
   // a per-project executor to run single-threaded sync phases
   private final ListeningExecutorService singleThreadedExecutor;
   private final Project project;
@@ -213,25 +211,11 @@ final class SyncPhaseCoordinator {
     buildSystem = Blaze.getBuildSystemProvider(project).getBuildSystem();
   }
 
-  private boolean useRemoteExecutor(BlazeSyncParams syncParams) {
-    if (syncParams.syncMode() == SyncMode.NO_BUILD) {
-      return false;
-    }
-    SyncStrategy strategy = buildSystem.getSyncStrategy(project);
-    switch (strategy) {
-      case DECIDE_AUTOMATICALLY:
-      case PARALLEL:
-        return true;
-      case SERIAL:
-        return false;
-    }
-    throw new IllegalStateException("Invalid sync strategy: " + strategy);
-  }
-
   ListenableFuture<Void> syncProject(BlazeSyncParams syncParams, BlazeContext parentContext) {
-    boolean singleThreaded = !useRemoteExecutor(syncParams);
+    boolean singleThreaded = true;
     return ProgressiveTaskWithProgressIndicator.builder(project, "Syncing Project")
-        .setExecutor(singleThreaded ? singleThreadedExecutor : remoteBuildExecutor)
+        .setExecutor(singleThreadedExecutor)
+        .setModality(BuildViewMigration.progressModality())
         .submitTask(
             indicator ->
                 Scope.push(
@@ -280,6 +264,7 @@ final class SyncPhaseCoordinator {
     Future<?> possiblyIgnoredError =
         ProgressiveTaskWithProgressIndicator.builder(project, "Filtering Project Targets")
             .setExecutor(singleThreadedExecutor)
+            .setModality(BuildViewMigration.progressModality())
             .submitTask(
                 indicator ->
                     Scope.root(
@@ -320,14 +305,19 @@ final class SyncPhaseCoordinator {
     }
     BlazeImportSettings importSettings =
         BlazeImportSettingsManager.getInstance(project).getImportSettings();
-    BlazeProjectData blazeProjectData =
+    Preconditions.checkState(
+        Blaze.getProjectType(project) == ProjectType.ASPECT_SYNC,
+        "This should only happen in legacy sync");
+
+    BlazeProjectData data =
         BlazeProjectDataManager.getInstance(project).loadProject(importSettings);
-    if (blazeProjectData == null && mode != SyncMode.NO_BUILD) {
+    if (data == null && mode != SyncMode.NO_BUILD) {
       context.output(
           new StatusOutput(
               "Couldn't load previously cached project data; full sync will be needed"));
     }
-    return blazeProjectData;
+
+    return data;
   }
 
   private void doFilterProjectTargets(
@@ -354,13 +344,13 @@ final class SyncPhaseCoordinator {
               context,
               childContext -> {
                 SyncProjectState projectState =
-                    ProjectStateSyncTask.collectProjectState(project, context);
+                    ProjectStateSyncTask.collectProjectState(project, context, params);
                 if (projectState == null) {
                   return;
                 }
                 ProjectTargetData targetData =
                     oldProjectData
-                        .getTargetData()
+                        .targetData()
                         .filter(filter, projectState.getLanguageSettings());
 
                 fillInBuildStats(stats, projectState, /* buildResult= */ null);
@@ -369,7 +359,8 @@ final class SyncPhaseCoordinator {
                     params.syncMode(),
                     projectState,
                     targetData,
-                    oldProjectData.getBlazeInfo(),
+                    oldProjectData.blazeInfo(),
+                    oldProjectData.configurationData(),
                     childContext);
               },
               new TimingScope("Filtering project targets", EventType.Other));
@@ -400,7 +391,7 @@ final class SyncPhaseCoordinator {
    *     Otherwise runs the build phase then passes the result to the project update queue.
    */
   @VisibleForTesting
-  void runSync(BlazeSyncParams params, boolean singleThreaded, BlazeContext context) {
+  public void runSync(BlazeSyncParams params, boolean singleThreaded, BlazeContext context) {
     Instant startTime = Instant.now();
     int buildId = nextBuildId.getAndIncrement();
     try {
@@ -419,6 +410,9 @@ final class SyncPhaseCoordinator {
       }
 
       if (params.syncMode() == SyncMode.STARTUP) {
+        // aspects are also required on startup for the xcode query
+        AspectStorageService.of(project).prepare(context, null);
+
         finishSync(
             params,
             startTime,
@@ -429,7 +423,13 @@ final class SyncPhaseCoordinator {
             SyncStats.builder());
         return;
       }
-      SyncProjectState projectState = ProjectStateSyncTask.collectProjectState(project, context);
+
+      SyncProjectState projectState = ProjectStateSyncTask.collectProjectState(project, context, params);
+
+      if (params.syncMode().involvesBlazeBuild()) {
+        AspectStorageService.of(project).prepare(context, projectState);
+      }
+
       BlazeSyncBuildResult buildResult =
           BuildPhaseSyncTask.runBuildPhase(
               project, params, projectState, buildId, context, buildSystem);
@@ -457,7 +457,11 @@ final class SyncPhaseCoordinator {
       }
     } catch (Throwable e) {
       logSyncError(context, e);
-      context.onException(e);
+      if (e instanceof SyncCanceledException || e instanceof ProcessCanceledException) {
+        context.setCancelled();
+      } else {
+        context.setHasError();
+      }
       finishSync(
           params,
           startTime,
@@ -481,6 +485,7 @@ final class SyncPhaseCoordinator {
 
     ProgressiveTaskWithProgressIndicator.builder(project, "Syncing Project")
         .setExecutor(singleThreadedExecutor)
+        .setModality(BuildViewMigration.progressModality())
         .submitTaskLater(
             indicator ->
                 Scope.root(
@@ -511,7 +516,7 @@ final class SyncPhaseCoordinator {
     if (buildOutputs == null || !syncBuildResult.hasValidOutputs()) {
       return SyncResult.FAILURE;
     }
-    if (buildOutputs.buildResult.status == Status.FATAL_ERROR) {
+    if (buildOutputs.buildResult().status == Status.FATAL_ERROR) {
       if (BuildPhaseSyncTask.continueSyncOnOom.getValue()) {
         context.output(
             PrintOutput.error(
@@ -522,17 +527,17 @@ final class SyncPhaseCoordinator {
         return SyncResult.FAILURE;
       }
     }
-    if (buildOutputs.buildResult.status == BuildResult.Status.BUILD_ERROR) {
-      String buildSystem = Blaze.buildSystemName(project);
-      String message =
-          String.format(
-              "Sync was successful, but there were %1$s build errors. "
-                  + "The project may not be fully updated or resolve until fixed. "
-                  + "If the errors are from your working set, please uncheck "
-                  + "'%1$s > Sync > Expand Sync to Working Set' and try again.",
-              buildSystem);
-      context.output(PrintOutput.error(message));
-      IssueOutput.warn(message).submit(context);
+    if (buildOutputs.buildResult().status == BuildResult.Status.BUILD_ERROR) {
+      final var message = String.format(
+          "The project may not be fully updated or resolve until fixed. "
+              + "If the errors are from your working set, please uncheck "
+              + "'%s > Sync > Expand Sync to Working Set' and try again.",
+          Blaze.buildSystemName(project));
+
+      IssueOutput.warn("Sync was successful, but there were build errors")
+          .withDescription(message)
+          .submit(context);
+
       return SyncResult.PARTIAL_SUCCESS;
     }
     return SyncResult.SUCCESS;
@@ -557,12 +562,19 @@ final class SyncPhaseCoordinator {
                   throw new SyncFailedException();
                 }
 
+                BlazeConfigurationData configData = extractConfigurations(
+                    updateTask.buildResult().getConfigurationData(),
+                    updateTask.buildResult().getBuildResult(),
+                    getOldProjectData(context, updateTask.syncParams().syncMode())
+                );
+
                 ProjectUpdateSyncTask.runProjectUpdatePhase(
                     project,
                     updateTask.syncParams().syncMode(),
                     updateTask.projectState(),
                     targetData,
                     updateTask.buildResult().getBlazeInfo(),
+                    configData,
                     childContext);
               },
               new TimingScope("Project update phase", EventType.Other));
@@ -584,6 +596,30 @@ final class SyncPhaseCoordinator {
           syncResult,
           stats);
     }
+  }
+
+  /**
+   * Extracts configuration data, preferring bazel config data over BEP data.
+   *
+   * <p>Priority: (1) bazel config --dump_all data (has ALL configs including transitions),
+   * (2) BEP configurations (fallback, only top-level), (3) old project data, (4) EMPTY.
+   */
+  private static BlazeConfigurationData extractConfigurations(
+      @Nullable BlazeConfigurationData bazelConfigData,
+      @Nullable BlazeBuildOutputs buildOutputs,
+      @Nullable BlazeProjectData oldProjectData
+  ) {
+    if (bazelConfigData != null) {
+      return bazelConfigData;
+    }
+
+    if (buildOutputs != null) {
+      var builder = ImmutableMap.<String, BlazeConfiguration>builder();
+      buildOutputs.configurations().forEach((k, v) -> builder.put(k, BlazeConfiguration.fromProto(v, k)));
+      return BlazeConfigurationData.create(builder.build());
+    }
+
+    return oldProjectData != null ? oldProjectData.configurationData() : BlazeConfigurationData.EMPTY;
   }
 
   @Nullable
@@ -620,7 +656,7 @@ final class SyncPhaseCoordinator {
         }
         int librariesCount = BlazeLibraryCollector.getLibraries(projectViewSet, projectData).size();
         stats
-            .setTargetMapSize(projectData.getTargetMap().targets().size())
+            .setTargetMapSize(projectData.targetMap().targets().size())
             .setLibraryCount(librariesCount);
         onSyncComplete(
             project, context, projectViewSet, buildIds, projectData, syncParams, syncResult);
@@ -709,7 +745,7 @@ final class SyncPhaseCoordinator {
           .setWorkspaceType(projectState.getLanguageSettings().getWorkspaceType())
           .setLanguagesActive(projectState.getLanguageSettings().getActiveLanguages())
           .setBlazeProjectFiles(
-              projectState.getProjectViewSet().listScalarItems(ImportSection.KEY));
+              projectState.getProjectViewSet().listScalarItems(ImportSection.KEY, TryImportSection.KEY));
     }
     if (buildResult != null) {
       buildResult
@@ -840,8 +876,8 @@ final class SyncPhaseCoordinator {
 
   private static String durationStr(long timeMillis) {
     return timeMillis >= 1000
-        ? String.format("%.1fs", timeMillis / 1000d)
-        : String.format("%sms", timeMillis);
+        ? String.format(Locale.ROOT, "%.1fs", timeMillis / 1000d)
+        : String.format(Locale.ROOT, "%sms", timeMillis);
   }
 
   private static void logSyncError(BlazeContext context, Throwable e) {
@@ -854,9 +890,12 @@ final class SyncPhaseCoordinator {
       if (cause instanceof SyncCanceledException) {
         return;
       }
+      if (cause instanceof JobCancellationException) {
+        return;
+      }
       if (cause instanceof SyncFailedException) {
         if (cause.getMessage() != null) {
-          IssueOutput.error(cause.getMessage()).submit(context);
+          IssueOutput.error(cause.getMessage()).withThrowable(cause).submit(context);
         }
         logger.warn("Sync failed", cause);
         return;
@@ -864,6 +903,6 @@ final class SyncPhaseCoordinator {
       cause = cause.getCause();
     }
     logger.error(e);
-    IssueOutput.error("Internal error: " + e.getMessage()).submit(context);
+    IssueOutput.error("Internal error: " + e.getMessage()).withThrowable(e).submit(context);
   }
 }

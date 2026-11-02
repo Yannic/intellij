@@ -92,8 +92,8 @@ public class BlazeTypescriptGotoDeclarationHandler implements GotoDeclarationHan
         BlazeProjectDataManager.getInstance(project).getBlazeProjectData();
     if (!Blaze.isBlazeProject(project)
         || projectData == null
-        || !projectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.JAVASCRIPT)
-        || !projectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.TYPESCRIPT)) {
+        || !projectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.JAVASCRIPT)
+        || !projectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.TYPESCRIPT)) {
       return null;
     }
     JSReferenceExpression referenceExpression =
@@ -250,7 +250,7 @@ public class BlazeTypescriptGotoDeclarationHandler implements GotoDeclarationHan
       PsiManager psiManager,
       String path) {
     return Optional.of(path)
-        .map(ExecutionRootPath::new)
+        .map(ExecutionRootPath::create)
         .map(pathResolver::resolveExecutionRootPath)
         .map(lfs::findFileByIoFile)
         .map(psiManager::findFile)

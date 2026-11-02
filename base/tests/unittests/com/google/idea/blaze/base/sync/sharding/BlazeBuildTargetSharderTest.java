@@ -18,10 +18,13 @@ package com.google.idea.blaze.base.sync.sharding;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static junit.framework.TestCase.assertFalse;
+import static junit.framework.TestCase.assertTrue;
 import static junit.framework.TestCase.fail;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.io.ByteStreams;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -30,10 +33,17 @@ import com.google.idea.blaze.base.BlazeTestCase;
 import com.google.idea.blaze.base.async.process.ExternalTask;
 import com.google.idea.blaze.base.async.process.ExternalTaskProvider;
 import com.google.idea.blaze.base.bazel.BazelBuildSystemProvider;
-import com.google.idea.blaze.base.bazel.BuildSystem.SyncStrategy;
+import com.google.idea.blaze.base.bazel.BuildSystem;
 import com.google.idea.blaze.base.bazel.BuildSystemProvider;
+import com.google.idea.blaze.base.bazel.FakeBlazeCommandRunner;
 import com.google.idea.blaze.base.bazel.FakeBuildInvoker;
+import com.google.idea.blaze.base.buildview.BazelExecService;
+import com.google.idea.blaze.base.buildview.FakeBazelExecService;
+import com.google.idea.blaze.base.command.BlazeCommand;
 import com.google.idea.blaze.base.command.BuildFlagsProvider;
+import com.google.idea.blaze.base.command.buildresult.BuildResult;
+import com.google.idea.blaze.base.command.buildresult.BuildResultHelper;
+import com.google.idea.blaze.base.command.info.BlazeInfo;
 import com.google.idea.blaze.base.console.BlazeConsoleLineProcessorProvider;
 import com.google.idea.blaze.base.console.BlazeConsoleLineProcessorProvider.GeneralProvider;
 import com.google.idea.blaze.base.io.FileOperationProvider;
@@ -52,6 +62,7 @@ import com.google.idea.blaze.base.projectview.ProjectView;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
 import com.google.idea.blaze.base.projectview.section.ScalarSection;
 import com.google.idea.blaze.base.projectview.section.sections.ShardBlazeBuildsSection;
+import com.google.idea.blaze.base.projectview.section.sections.SyncManualTargetsSection;
 import com.google.idea.blaze.base.projectview.section.sections.TargetShardSizeSection;
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.BlazeScope;
@@ -60,16 +71,20 @@ import com.google.idea.blaze.base.settings.BuildBinaryType;
 import com.google.idea.blaze.base.sync.BlazeSyncPlugin;
 import com.google.idea.blaze.base.sync.sharding.BlazeBuildTargetSharder.ShardedTargetsResult;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolverImpl;
+import com.google.idea.blaze.exception.BuildException;
 import com.google.idea.common.experiments.ExperimentService;
 import com.google.idea.common.experiments.MockExperimentService;
 import com.intellij.openapi.project.Project;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Collection;
 import java.util.List;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.function.Supplier;
 import javax.annotation.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -83,6 +98,9 @@ public class BlazeBuildTargetSharderTest extends BlazeTestCase {
   private final FakeWildCardTargetExpanderExternalTaskProvider
       fakeWildCardTargetExpanderExternalTaskProvider =
           new FakeWildCardTargetExpanderExternalTaskProvider();
+  private final FakeWildCardTargetExpanderBlazeInvoker fakeWildCardTargetExpanderBlazeInvoker =
+      new FakeWildCardTargetExpanderBlazeInvoker();
+  private final FakeBazelExecService fakeBazelExecService = new FakeBazelExecService();
 
   @Override
   protected void initTest(Container applicationServices, Container projectServices) {
@@ -108,6 +126,20 @@ public class BlazeBuildTargetSharderTest extends BlazeTestCase {
 
     projectServices.register(
         BlazeImportSettingsManager.class, new BlazeImportSettingsManager(getProject()));
+    projectServices.register(BazelExecService.class, fakeBazelExecService);
+    // Wire up fakeBazelExecService to delegate to the fakeWildCardTargetExpanderBlazeInvoker
+    fakeBazelExecService.setExecHandler((ctx, cmd) -> {
+      try {
+        String output = String.join(System.lineSeparator(),
+            fakeWildCardTargetExpanderBlazeInvoker.outputMessages);
+        if (fakeWildCardTargetExpanderBlazeInvoker.failure) {
+          return FakeBazelExecService.createExecResult("", 1);
+        }
+        return FakeBazelExecService.createExecResult(output, 0);
+      } catch (Exception e) {
+        return FakeBazelExecService.createExecResult("", 1);
+      }
+    });
   }
 
   @Override
@@ -125,9 +157,7 @@ public class BlazeBuildTargetSharderTest extends BlazeTestCase {
             target("-//java/com/google:one"),
             target("-//java/com/google:three"),
             target("-//java/com/google:six"));
-    ShardedTargetList shards =
-        BlazeBuildTargetSharder.shardSingleTargets(
-            targets, SyncStrategy.SERIAL, /* shardSize= */ 3);
+    ShardedTargetList shards = BlazeBuildTargetSharder.shardSingleTargets(targets, /* shardSize= */ 3);
 
     assertThat(shards.shardedTargets).hasSize(1);
     assertThat(shards.shardedTargets.get(0)).containsExactly(target("//java/com/google:two"));
@@ -142,9 +172,7 @@ public class BlazeBuildTargetSharderTest extends BlazeTestCase {
             target("//java/com/baz:target"),
             target("//java/com/foo:other"),
             target("-//java/com/foo/..."));
-    ShardedTargetList shards =
-        BlazeBuildTargetSharder.shardSingleTargets(
-            targets, SyncStrategy.SERIAL, /* shardSize= */ 2);
+    ShardedTargetList shards = BlazeBuildTargetSharder.shardSingleTargets(targets, /* shardSize= */ 2);
     assertThat(shards.shardedTargets).hasSize(1);
     assertThat(shards.shardedTargets.get(0))
         .containsExactly(target("//java/com/bar:target"), target("//java/com/baz:target"))
@@ -160,9 +188,7 @@ public class BlazeBuildTargetSharderTest extends BlazeTestCase {
             target("//java/com/google:one"),
             target("-//java/com/google:two"),
             target("//java/com/google:two"));
-    ShardedTargetList shards =
-        BlazeBuildTargetSharder.shardSingleTargets(
-            targets, SyncStrategy.SERIAL, /* shardSize= */ 3);
+    ShardedTargetList shards = BlazeBuildTargetSharder.shardSingleTargets(targets, /* shardSize= */ 3);
     assertThat(shards.shardedTargets).hasSize(1);
     assertThat(shards.shardedTargets.get(0))
         .containsExactly(target("//java/com/google:one"), target("//java/com/google:two"));
@@ -256,135 +282,89 @@ public class BlazeBuildTargetSharderTest extends BlazeTestCase {
   @Test
   public void expandAndShardTargets_shardingApproachPartitionWithoutExpanding() {
     List<TargetExpression> targets = ImmutableList.of(target("//java/com/google:foo"));
-    ShardedTargetsResult result =
-        expandAndShardTargets(SyncStrategy.SERIAL, ProjectView.builder().build(), targets);
+    ShardedTargetsResult result = expandAndShardTargets(ProjectView.builder().build(), targets);
 
     assertThat(result.buildResult.exitCode).isEqualTo(0);
     assertThat(result.shardedTargets.shardStats.shardingApproach())
         .isEqualTo(ShardingApproach.PARTITION_WITHOUT_EXPANDING);
   }
 
-  @Test
-  public void expandAndShardTargets_remoteBuild_buildBatchingServiceIsUsed() {
-    fakeBuildBatchingService
-        .setShardingApproach(ShardingApproach.BUILD_TARGET_BATCHING_SERVICE)
-        .setFailToBatchTarget(false);
-    List<TargetExpression> targets = ImmutableList.of(target("//java/com/google:foo"));
-    ShardedTargetsResult result =
-        expandAndShardTargets(SyncStrategy.PARALLEL, ProjectView.builder().build(), targets);
-
-    assertThat(result.buildResult.exitCode).isEqualTo(0);
-    assertThat(result.shardedTargets.shardStats.shardingApproach())
-        .isEqualTo(ShardingApproach.BUILD_TARGET_BATCHING_SERVICE);
-  }
-
-  @Test
-  public void expandAndShardTargets_localBuild_buildBatchingServiceIsUsed() {
-    fakeBuildBatchingService
-        .setShardingApproach(ShardingApproach.LEXICOGRAPHIC_TARGET_SHARDER)
-        .setFailToBatchTarget(false);
-    List<TargetExpression> targets = ImmutableList.of(target("//java/com/google:foo"));
-    ShardedTargetsResult result =
-        expandAndShardTargets(
-            SyncStrategy.PARALLEL,
-            ProjectView.builder()
-                .add(ScalarSection.builder(ShardBlazeBuildsSection.KEY).set(true))
-                .add(ScalarSection.builder(TargetShardSizeSection.KEY).set(500))
-                .build(),
-            targets);
-
-    assertThat(result.buildResult.exitCode).isEqualTo(0);
-    ShardStats shardStats = result.shardedTargets.shardStats;
-    assertThat(shardStats.shardingApproach())
-        .isEqualTo(ShardingApproach.LEXICOGRAPHIC_TARGET_SHARDER);
-  }
-
-  @Test
-  public void expandAndShardTargets_failToExpand_shardingApproachError() {
-    fakeWildCardTargetExpanderExternalTaskProvider.setReturnVal(2);
-    fakeBuildBatchingService
-        .setShardingApproach(ShardingApproach.LEXICOGRAPHIC_TARGET_SHARDER)
-        .setFailToBatchTarget(false);
-    List<TargetExpression> targets = ImmutableList.of(target("//java/com/google/..."));
-    ShardedTargetsResult result =
-        expandAndShardTargets(
-            SyncStrategy.PARALLEL,
-            ProjectView.builder()
-                .add(ScalarSection.builder(ShardBlazeBuildsSection.KEY).set(true))
-                .add(ScalarSection.builder(TargetShardSizeSection.KEY).set(500))
-                .build(),
-            targets);
-
-    assertThat(result.buildResult.exitCode).isEqualTo(2);
-    assertThat(result.shardedTargets.shardStats.shardingApproach())
-        .isEqualTo(ShardingApproach.ERROR);
-  }
-
-  @Test
-  public void expandAndShardTargets_failToBatchingTargets_shardingApproachError() {
-    fakeWildCardTargetExpanderExternalTaskProvider.setReturnVal(0);
-    fakeBuildBatchingService
-        .setShardingApproach(ShardingApproach.LEXICOGRAPHIC_TARGET_SHARDER)
-        .setFailToBatchTarget(true);
-    List<TargetExpression> targets = ImmutableList.of(target("//java/com/google:foo"));
-    ShardedTargetsResult result =
-        expandAndShardTargets(
-            SyncStrategy.PARALLEL,
-            ProjectView.builder()
-                .add(ScalarSection.builder(ShardBlazeBuildsSection.KEY).set(true))
-                .add(ScalarSection.builder(TargetShardSizeSection.KEY).set(500))
-                .build(),
-            targets);
-
-    assertThat(result.buildResult.exitCode).isEqualTo(0);
-    assertThat(result.shardedTargets.shardStats.shardingApproach())
-        .isEqualTo(ShardingApproach.ERROR);
-  }
-
-  @Test
-  public void expandAndShardTargets_expandWildcardTargets() {
-    String expectedLabel1 = "//java/com/google:one";
-    String expectedLabel2 = "//java/com/google:two";
-    fakeWildCardTargetExpanderExternalTaskProvider
-        .setReturnVal(0)
-        .setOutputMessage("sh_library rule " + expectedLabel1, "sh_library rule " + expectedLabel2);
-    fakeBuildBatchingService
-        .setShardingApproach(ShardingApproach.LEXICOGRAPHIC_TARGET_SHARDER)
-        .setFailToBatchTarget(false);
-
-    List<TargetExpression> targets = ImmutableList.of(target("//java/com/google/..."));
-    ShardedTargetsResult result =
-        expandAndShardTargets(
-            SyncStrategy.PARALLEL,
-            ProjectView.builder()
-                .add(ScalarSection.builder(ShardBlazeBuildsSection.KEY).set(true))
-                .add(ScalarSection.builder(TargetShardSizeSection.KEY).set(500))
-                .build(),
-            targets);
-
-    ShardStats shardStats = result.shardedTargets.shardStats;
-    assertThat(shardStats.suggestedTargetSizePerShard()).isEqualTo(500);
-    assertThat(shardStats.actualTargetSizePerShard()).containsExactly(2);
-    assertThat(result.shardedTargets.shardedTargets)
-        .containsExactly(ImmutableList.of(target(expectedLabel1), target(expectedLabel2)));
-  }
-
   private ShardedTargetsResult expandAndShardTargets(
-      SyncStrategy syncStrategy, ProjectView projectView, List<TargetExpression> targets) {
+      ProjectView projectView, List<TargetExpression> targets, BuildSystem.BuildInvoker invoker) {
     WorkspaceRoot workspaceRoot = new WorkspaceRoot(new File("workspaceRoot"));
     return BlazeBuildTargetSharder.expandAndShardTargets(
         getProject(),
         BlazeContext.create(),
-        workspaceRoot,
         ProjectViewSet.builder().add(projectView).build(),
         new WorkspacePathResolverImpl(workspaceRoot),
         targets,
-        FakeBuildInvoker.builder().type(BuildBinaryType.BAZEL).build(),
-        syncStrategy);
+        invoker);
+  }
+
+  private ShardedTargetsResult expandAndShardTargets(ProjectView projectView, List<TargetExpression> targets) {
+    return expandAndShardTargets(projectView, targets, fakeWildCardTargetExpanderBlazeInvoker);
   }
 
   private static TargetExpression target(String expression) {
     return Preconditions.checkNotNull(TargetExpression.fromStringSafe(expression));
+  }
+
+  private static class FakeWildCardTargetExpanderBlazeInvoker extends FakeBuildInvoker {
+    private List<String> outputMessages = ImmutableList.of();
+    private boolean failure = false;
+
+    public void setOutputMessages(List<String> outputMessages) {
+      this.outputMessages = outputMessages;
+    }
+
+    public void setFailure(boolean failure) {
+      this.failure = failure;
+    }
+
+    @Override
+    public InputStream invokeQuery(BlazeCommand.Builder blazeCommandBuilder, BlazeContext context) throws BuildException {
+      if (this.failure) {
+        throw new BuildException("failure");
+      }
+      return new ByteArrayInputStream(
+          String.join(System.lineSeparator(), outputMessages).getBytes(UTF_8));
+    }
+
+    @Override
+    public ImmutableSet<Capability> getCapabilities() {
+      return super.getCapabilities();
+    }
+
+    @Override
+    public BuildBinaryType getType() {
+      throw new UnsupportedOperationException(String.format("%s does not support getType()", this.getClass().getName()));
+    }
+
+    @Override
+    public String getBinaryPath() {
+      return "";
+    }
+
+    @Override
+    @Nullable
+    public BlazeInfo getBlazeInfo(BlazeContext blazeContext) {
+      return null;
+    }
+
+    @Override
+    protected Supplier<BuildResultHelper> getBuildResultHelperSupplier() {
+      return null;
+    }
+
+    @Override
+    public FakeBlazeCommandRunner getCommandRunner() {
+      throw new UnsupportedOperationException(String.format("%s does not support getCommandRunner()", this.getClass().getName()));
+    }
+
+    @Override
+    public BuildSystem getBuildSystem() {
+      throw new UnsupportedOperationException(String.format("%s does not support getBuildSystem()", this.getClass().getName()));
+    }
   }
 
   private static class FakeWildCardTargetExpanderExternalTaskProvider
@@ -418,9 +398,7 @@ public class BlazeBuildTargetSharderTest extends BlazeTestCase {
     final int returnVal;
 
     FakeWildCardTargetExpanderExternalTask(
-        @Nullable OutputStream stdout,
-        int returnVal,
-        String... outputMessages) {
+        @Nullable OutputStream stdout, int returnVal, String... outputMessages) {
       this.stdout = stdout != null ? stdout : NULL_STREAM;
       this.outputMessages = outputMessages;
       this.returnVal = returnVal;
@@ -480,8 +458,7 @@ public class BlazeBuildTargetSharderTest extends BlazeTestCase {
 
     @Nullable
     @Override
-    public ImmutableList<ImmutableList<Label>> calculateTargetBatches(
-        Set<Label> targets, SyncStrategy syncStrategy, int suggestedShardSize) {
+    public ImmutableList<ImmutableList<Label>> calculateTargetBatches(Set<Label> targets, int suggestedShardSize) {
       return failToBatchTargets
           ? null
           : ImmutableList.of(targets).stream()

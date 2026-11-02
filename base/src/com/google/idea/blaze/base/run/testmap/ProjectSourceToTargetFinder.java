@@ -1,11 +1,11 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2026 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,10 +15,10 @@
  */
 package com.google.idea.blaze.base.run.testmap;
 
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.collect.ImmutableSortedSet.toImmutableSortedSet;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.util.concurrent.Futures;
 import com.google.idea.blaze.base.dependencies.TargetInfo;
 import com.google.idea.blaze.base.ideinfo.TargetIdeInfo;
@@ -34,6 +34,7 @@ import java.util.Collection;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Future;
+import org.jetbrains.annotations.NotNull;
 
 /**
  * Used to locate tests from source files for things like right-clicks.
@@ -43,7 +44,8 @@ import java.util.concurrent.Future;
 public class ProjectSourceToTargetFinder implements SourceToTargetFinder {
 
   @Override
-  public Future<Collection<TargetInfo>> targetsForSourceFiles(
+  @NotNull
+  public Future<@NotNull Collection<TargetInfo>> targetsForSourceFiles(
       Project project, Set<File> sourceFiles, Optional<RuleType> ruleType) {
     FilteredTargetMap targetMap =
         SyncCache.getInstance(project)
@@ -51,17 +53,19 @@ public class ProjectSourceToTargetFinder implements SourceToTargetFinder {
     if (targetMap == null) {
       return Futures.immediateFuture(ImmutableList.of());
     }
-    ImmutableSet<TargetInfo> targets =
+    ImmutableSortedSet<TargetInfo> targets =
         targetMap.targetsForSourceFiles(sourceFiles).stream()
             .map(TargetIdeInfo::toTargetInfo)
-            .filter(target -> !ruleType.isPresent() || target.getRuleType().equals(ruleType.get()))
-            .collect(toImmutableSet());
+            .filter(target -> ruleType.isEmpty() || target.getRuleType().equals(ruleType.get()))
+            .distinct()
+            .sorted(new TargetInfoComparator())
+            .collect(toImmutableSortedSet(new TargetInfoComparator()));
     return Futures.immediateFuture(targets);
   }
 
   private static FilteredTargetMap computeTargetMap(Project project, BlazeProjectData projectData) {
     return computeTargetMap(
-        project, projectData.getArtifactLocationDecoder(), projectData.getTargetMap());
+        project, projectData.artifactLocationDecoder(), projectData.targetMap());
   }
 
   private static FilteredTargetMap computeTargetMap(

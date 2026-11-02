@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2026 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,21 +15,26 @@
  */
 package com.google.idea.blaze.base;
 
-import com.google.idea.blaze.base.command.buildresult.BlazeArtifact;
-import com.google.idea.blaze.base.command.buildresult.BlazeArtifact.LocalFileArtifact;
+
+import com.google.idea.blaze.base.command.buildresult.LocalFileArtifact;
 import com.google.idea.blaze.base.io.FileOperationProvider;
 import com.google.idea.blaze.base.io.InputStreamProvider;
 import com.google.idea.blaze.base.io.VirtualFileSystemProvider;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
 import com.google.idea.blaze.base.settings.BuildSystemName;
 import com.google.idea.blaze.base.sync.SyncCache;
+import com.google.idea.blaze.base.toolwindow.NoopTasksToolWindowService;
+import com.google.idea.blaze.base.toolwindow.TasksToolWindowService;
+import com.google.idea.blaze.common.artifact.BlazeArtifact;
 import com.google.idea.testing.EdtRule;
 import com.google.idea.testing.IntellijTestSetupRule;
 import com.google.idea.testing.ServiceHelper;
 import com.google.idea.testing.VerifyRequiredPluginsEnabled;
+import com.google.idea.testing.runfiles.Runfiles;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.extensions.ExtensionPointName;
@@ -48,20 +53,17 @@ import com.intellij.testFramework.UsefulTestCase;
 import com.intellij.testFramework.fixtures.CodeInsightTestFixture;
 import com.intellij.testFramework.fixtures.IdeaProjectTestFixture;
 import com.intellij.testFramework.fixtures.IdeaTestFixtureFactory;
-import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase;
 import com.intellij.testFramework.fixtures.TestFixtureBuilder;
 import com.intellij.testFramework.fixtures.impl.LightTempDirTestFixtureImpl;
-import java.io.BufferedInputStream;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
+import com.intellij.util.ui.UIUtil;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.rules.TestRule;
 import org.junit.runner.Description;
 import org.junit.runners.model.Statement;
+
+import java.io.*;
 
 /** Base test class for blaze integration tests. {@link UsefulTestCase} */
 public abstract class BlazeIntegrationTestCase {
@@ -95,10 +97,17 @@ public abstract class BlazeIntegrationTestCase {
   protected TestFileSystem fileSystem;
   protected WorkspaceFileSystem workspace;
 
+  private String ideaPythonHelpersPath;
+
   @Before
   public final void setUp() throws Throwable {
     testFixture = createTestFixture();
     testFixture.setUp();
+    // In 241 `setUp()` first processes events and then waits for indexing to complete. In most
+    // cases indexing finishes sooner and processing events runs all startup activities, but when it
+    // does not they get deferred. This seems to be a bug in the platform's test utils, which should
+    // soon become irrelevant as it only affects old style `StartupActivity`es.
+    EdtTestUtil.runInEdtAndWait(UIUtil::dispatchAllInvocationEvents);
     fileSystem =
         new TestFileSystem(getProject(), testFixture.getTempDirFixture(), isLightTestCase());
 
@@ -117,7 +126,8 @@ public abstract class BlazeIntegrationTestCase {
                 "test-project",
                 projectDataDirectory.getPath(),
                 workspaceRoot.fileForPath(new WorkspacePath("project-view-file")).getPath(),
-                buildSystem()));
+                buildSystem(),
+                ProjectType.ASPECT_SYNC));
 
     registerApplicationService(
         InputStreamProvider.class,
@@ -140,6 +150,7 @@ public abstract class BlazeIntegrationTestCase {
           }
         });
 
+    registerProjectService(TasksToolWindowService.class, new NoopTasksToolWindowService());
     if (isLightTestCase()) {
       registerApplicationService(
           FileOperationProvider.class, new TestFileSystem.MockFileOperationProvider());
@@ -151,6 +162,12 @@ public abstract class BlazeIntegrationTestCase {
     if (requiredPlugins != null) {
       VerifyRequiredPluginsEnabled.runCheck(requiredPlugins.split(","));
     }
+
+    ideaPythonHelpersPath = System.getProperty("idea.python.helpers.path");
+    System.setProperty(
+        "idea.python.helpers.path",
+        Runfiles.runfilesPath("tools/vendor/google/aswb/third_party/java/jetbrains/python/helpers")
+        .toString());
   }
 
   @After
@@ -182,6 +199,12 @@ public abstract class BlazeIntegrationTestCase {
         });
     testFixture.tearDown();
     testFixture = null;
+
+    if (ideaPythonHelpersPath == null) {
+      System.clearProperty("idea.python.helpers.path");
+    } else {
+      System.setProperty("idea.python.helpers.path", ideaPythonHelpersPath);
+    }
   }
 
   private static void runWriteAction(Runnable writeAction) throws Throwable {
@@ -194,7 +217,7 @@ public abstract class BlazeIntegrationTestCase {
 
     if (isLightTestCase()) {
       TestFixtureBuilder<IdeaProjectTestFixture> fixtureBuilder =
-          factory.createLightFixtureBuilder(LightJavaCodeInsightFixtureTestCase.JAVA_8);
+              factory.createLightFixtureBuilder("test-project");
       IdeaProjectTestFixture lightFixture = fixtureBuilder.getFixture();
       return factory.createCodeInsightFixture(lightFixture, new LightTempDirTestFixtureImpl(true));
     }
@@ -235,17 +258,8 @@ public abstract class BlazeIntegrationTestCase {
     ServiceHelper.registerApplicationService(key, implementation, getTestRootDisposable());
   }
 
-  protected <T> void registerApplicationComponent(Class<T> key, T implementation) {
-    ServiceHelper.registerApplicationComponent(key, implementation, getTestRootDisposable());
-  }
-
   protected <T> void registerProjectService(Class<T> key, T implementation) {
     ServiceHelper.registerProjectService(
-        getProject(), key, implementation, getTestRootDisposable());
-  }
-
-  public <T> void registerProjectComponent(Class<T> key, T implementation) {
-    ServiceHelper.registerProjectComponent(
         getProject(), key, implementation, getTestRootDisposable());
   }
 

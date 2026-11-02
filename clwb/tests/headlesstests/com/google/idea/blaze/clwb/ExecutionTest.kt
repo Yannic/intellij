@@ -1,0 +1,352 @@
+/*
+ * Copyright 2026 The Bazel Authors. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.google.idea.blaze.clwb
+
+import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
+import com.google.idea.blaze.base.bazel.BazelVersion
+import com.google.idea.blaze.base.model.primitives.Label
+import com.google.idea.blaze.base.run.BlazeCommandRunConfiguration
+import com.google.idea.blaze.base.run.producers.BlazeBuildFileRunConfigurationProducer
+import com.google.idea.blaze.base.run.state.BlazeCommandRunConfigurationCommonState
+import com.google.idea.blaze.clwb.base.AllowedVfsRoot
+import com.google.idea.blaze.clwb.base.AllowedVfsRoot.Config
+import com.google.idea.blaze.clwb.base.ClwbHeadlessTestCase
+import com.google.idea.blaze.clwb.run.BlazeCidrRemoteDebugProcess
+import com.google.idea.testing.headless.ProjectViewBuilder
+import com.intellij.execution.*
+import com.intellij.execution.actions.ConfigurationContext
+import com.intellij.execution.actions.RunConfigurationProducer
+import com.intellij.execution.executors.DefaultDebugExecutor
+import com.intellij.execution.executors.DefaultRunExecutor
+import com.intellij.execution.impl.ExecutionManagerImpl
+import com.intellij.execution.process.ProcessEvent
+import com.intellij.execution.process.ProcessHandler
+import com.intellij.execution.process.ProcessListener
+import com.intellij.execution.process.ProcessOutputTypes
+import com.intellij.execution.runners.ExecutionEnvironment
+import com.intellij.execution.runners.ExecutionUtil
+import com.intellij.openapi.actionSystem.ActionPlaces
+import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.PlatformCoreDataKeys
+import com.intellij.openapi.actionSystem.impl.SimpleDataContext
+import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Key
+import com.intellij.util.asSafely
+import com.intellij.util.system.OS
+import com.intellij.xdebugger.XDebuggerManager
+import com.jetbrains.cidr.execution.debugger.CidrLocalDebugProcess
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.JUnit4
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.ArrayList
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+
+private const val ECHO_OUTPUT_MARKER = "ECHO_OUTPUT_FILE: "
+
+@RunWith(JUnit4::class)
+class ExecutionTest : ClwbHeadlessTestCase() {
+
+  @Test
+  fun testClwb() {
+    val errors = runSync(defaultSyncParams().build())
+    errors.assertNoErrors()
+
+    checkRun(DefaultRunExecutor.EXECUTOR_ID)
+    checkArgs(DefaultRunExecutor.EXECUTOR_ID)
+    checkTest(DefaultRunExecutor.EXECUTOR_ID)
+
+    // debugging on macOS requires special permissions which the ci agents do not have
+    if (OS.CURRENT != OS.macOS) {
+      checkRun(DefaultDebugExecutor.EXECUTOR_ID)
+      checkArgs(DefaultDebugExecutor.EXECUTOR_ID)
+      checkTest(DefaultDebugExecutor.EXECUTOR_ID)
+
+      checkTestSandboxNoNetwork()
+    }
+  }
+
+  override fun projectViewText(version: BazelVersion): ProjectViewBuilder {
+    val builder = super.projectViewText(version)
+
+    if (OS.CURRENT == OS.Windows) {
+      builder.addBuildFlag("--cxxopt=/std:c++17")
+    } else {
+      builder.addBuildFlag("--cxxopt=-std=c++17")
+    }
+
+    builder.addBuildFlag("--compilation_mode=dbg")
+    builder.addBuildFlag("--test_output=streamed")
+
+    return builder
+  }
+
+  override fun addAllowedVfsRoots(roots: ArrayList<AllowedVfsRoot>) {
+    super.addAllowedVfsRoots(roots)
+
+    if (OS.CURRENT == OS.Windows) {
+      roots.add(AllowedVfsRoot.recursive(Config.DEBUG, "_virtual_includes"))
+    }
+
+    roots.add(AllowedVfsRoot.recursive(Config.DEBUG, "external/catch2+"))
+  }
+
+  private fun checkRun(executorId: String) {
+    val echo = execute(Label.create("//main:echo0"), executorId)
+    echo.assertSuccess()
+
+    val gtest = execute(Label.create("//main:gtest"), executorId)
+    gtest.assertSuccess()
+
+    val catch2 = execute(Label.create("//main:catch"), executorId)
+    catch2.assertSuccess()
+  }
+
+  private fun checkArgs(executorId: String) {
+    assertThat(executeEcho("echo0", executorId, "'one argument with spaces'")).containsExactly(
+      "one argument with spaces"
+    )
+
+    assertThat(executeEcho("echo0", executorId, "'one argument' 'another argument'")).containsExactly(
+      "one argument",
+      "another argument"
+    )
+
+    assertThat(executeEcho("echo1", executorId, "CONFIG_ARGUMENT")).containsExactly(
+      "BUILD_FILE_STRING",
+      "CONFIG_ARGUMENT"
+    )
+
+    assertThat(executeEcho("echo2", executorId, "CONFIG_ARGUMENT")).containsExactly(
+      "main/echo.cc",
+      "CONFIG_ARGUMENT"
+    )
+  }
+
+  fun checkTest(executorId: String) {
+    // filter gtest by suite name
+    val gtestFiltered = execute(
+      Label.create("//main:gtest"), executorId,
+      testFilter = "FilterSuite.*"
+    )
+    gtestFiltered.assertSuccess()
+    assertThat(gtestFiltered.output).contains("FilterSuite.FilteredTest")
+    assertThat(gtestFiltered.output).contains("FilterSuite.SkippedTest")
+    assertThat(gtestFiltered.output).doesNotContain("SampleSuite.SampleTest")
+    assertThat(gtestFiltered.output).doesNotContain("SampleSuite.AnotherTest")
+
+    // filter gtest by specific test
+    val gtestSingleTest = execute(
+      Label.create("//main:gtest"), executorId,
+      testFilter = "FilterSuite.FilteredTest"
+    )
+    gtestSingleTest.assertSuccess()
+    assertThat(gtestSingleTest.output).contains("FilterSuite.FilteredTest")
+    assertThat(gtestSingleTest.output).doesNotContain("FilterSuite.SkippedTest")
+
+    // filter catch2 tests
+    val catchFiltered = execute(
+      Label.create("//main:catch"), executorId,
+      testFilter = "FilteredTest"
+    )
+    catchFiltered.assertSuccess()
+    assertThat(catchFiltered.output).contains("FilteredTest")
+    assertThat(catchFiltered.output).doesNotContain("SkippedTest")
+    assertThat(catchFiltered.output).doesNotContain("Test0")
+
+    // arguments for the test binary must be passed as --test_arg
+    val gtestArgs = execute(
+      Label.create("//main:gtest"), executorId,
+      args = listOf("--gtest_filter=FilterSuite.*")
+    )
+    gtestArgs.assertSuccess()
+    assertThat(gtestArgs.output).contains("FilterSuite.FilteredTest")
+    assertThat(gtestArgs.output).doesNotContain("SampleSuite.SampleTest")
+  }
+
+  fun checkTestSandboxNoNetwork() {
+    setBazelrcFlags(listOf("--nosandbox_default_allow_network"))
+
+    try {
+      val result = execute(Label.create("//main:gtest"), DefaultDebugExecutor.EXECUTOR_ID)
+
+      if (OS.CURRENT != OS.Linux) {
+        result.assertSuccess()
+      } else {
+        assertThat(result.exitCode).isEqualTo(3)
+      }
+    } finally {
+      clearBazelrcFlags()
+    }
+  }
+
+  private fun executeEcho(target: String, executorId: String, args: String): List<String> {
+    val result = execute(Label.create("//main:$target"), executorId, args = listOf(args))
+    result.assertSuccess()
+
+    val line = result.output.lines().firstOrNull { it.startsWith(ECHO_OUTPUT_MARKER) }
+    requireNotNull(line)
+
+    val path = Path.of(line.substring(ECHO_OUTPUT_MARKER.length))
+    assertThat(Files.exists(path)).isTrue()
+
+    return Files.readAllLines(path)
+  }
+
+  private fun execute(
+    label: Label,
+    executorId: String,
+    testFilter: String? = null,
+    args: List<String> = emptyList()
+  ): ExecutionResult {
+    val future = CompletableFuture<Int>()
+    val outputBuilder = StringBuilder()
+
+    val listener = object : ProcessListener {
+      override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
+        if (outputType == ProcessOutputTypes.STDOUT) {
+          outputBuilder.append(event.text)
+        }
+      }
+    }
+
+    // register the listener first before starting the run config
+    project.messageBus.connect(testRootDisposable).subscribe(
+      ExecutionManager.EXECUTION_TOPIC,
+      ExecutionResultListener(myProject, listener, future)
+    )
+
+    val element = findRule(label)
+
+    val dataContextBuilder = SimpleDataContext.builder()
+      .add(CommonDataKeys.PROJECT, project)
+      .add(PlatformCoreDataKeys.MODULE, ModuleUtilCore.findModuleForPsiElement(element))
+      .add(Location.DATA_KEY, PsiLocation.fromPsiElement(element))
+      .add(BlazeCommandRunConfigurationCommonState.USER_EXE_FLAG, args.toTypedArray())
+
+    val context = ConfigurationContext.getFromContext(
+      dataContextBuilder.build(),
+      ActionPlaces.UNKNOWN
+    )
+
+    val executor = ExecutorRegistry.getInstance().getExecutorById(executorId)
+    requireNotNull(executor) { "executor not found: $executorId" }
+
+    val producer = RunConfigurationProducer.getInstance(BlazeBuildFileRunConfigurationProducer::class.java)
+    val configuration = producer.createConfigurationFromContext(context)
+    requireNotNull(configuration)
+
+    if (testFilter != null) {
+      val blazeConfig = configuration.configuration.asSafely<BlazeCommandRunConfiguration>()
+      requireNotNull(blazeConfig)
+
+      val handlerState = blazeConfig.getHandlerStateIfType(BlazeCommandRunConfigurationCommonState::class.java)
+      requireNotNull(handlerState)
+
+      handlerState.testFilterState.testFilter = testFilter
+    }
+
+    val environmentBuilder = ExecutionUtil.createEnvironment(executor, configuration.configurationSettings)
+    requireNotNull(environmentBuilder)
+
+    val manager = ExecutionManager.getInstance(project) as ExecutionManagerImpl
+    manager.forceCompilationInTests = true
+    manager.restartRunProfile(environmentBuilder.build())
+
+    val exitCode = pullFuture(future, 2, TimeUnit.MINUTES)
+    return ExecutionResult(outputBuilder.toString(), exitCode ?: -1)
+  }
+
+  private data class ExecutionResult(val output: String, val exitCode: Int) {
+
+    fun assertSuccess() {
+      assertWithMessage(output).that(exitCode).isEqualTo(0)
+    }
+  }
+}
+
+private class ExecutionResultListener(
+  private val project: Project,
+  private val listener: ProcessListener,
+  private val future: CompletableFuture<Int>
+) : ExecutionListener {
+
+  // For remote debug we need to wait for two terminations and prefer the target's exit code.
+  // thenCombine fires only after both have completed, picking the target code when present.
+  private val targetTermination = CompletableFuture<Int?>()
+  private val handlerTermination = CompletableFuture<Int>()
+
+  init {
+    targetTermination
+      .thenCombine(handlerTermination) { target, handler -> target ?: handler }
+      .whenComplete { exit, throwable ->
+        if (throwable != null)
+          future.completeExceptionally(throwable)
+        else
+          future.complete(exit)
+      }
+  }
+
+  override fun processStarting(executor: String, env: ExecutionEnvironment, handler: ProcessHandler) {
+    if (executor == DefaultRunExecutor.EXECUTOR_ID) {
+      handler.addProcessListener(listener)
+      targetTermination.complete(null)
+      return
+    }
+
+    if (executor != DefaultDebugExecutor.EXECUTOR_ID) {
+      future.completeExceptionally(IllegalStateException("unexpected executor id"))
+      return
+    }
+
+    val session = XDebuggerManager.getInstance(project).currentSession
+    requireNotNull(session)
+
+    val debugProcess = session.debugProcess
+    if (debugProcess is CidrLocalDebugProcess) {
+      debugProcess.processHandler.addProcessListener(listener)
+      targetTermination.complete(null)
+      return
+    }
+
+    if (debugProcess is BlazeCidrRemoteDebugProcess) {
+      debugProcess.targetProcess.addProcessListener(listener)
+
+      debugProcess.targetProcess.addProcessListener(object : ProcessListener {
+        override fun processTerminated(event: ProcessEvent) {
+          targetTermination.complete(event.exitCode)
+        }
+      })
+
+      return
+    }
+
+    future.completeExceptionally(IllegalStateException("unexpected debug process type"))
+  }
+
+  override fun processNotStarted(executor: String, env: ExecutionEnvironment, cause: Throwable?) {
+    future.completeExceptionally(cause)
+  }
+
+  override fun processTerminated(executor: String, env: ExecutionEnvironment, handler: ProcessHandler, exitCode: Int) {
+    handlerTermination.complete(exitCode)
+  }
+}

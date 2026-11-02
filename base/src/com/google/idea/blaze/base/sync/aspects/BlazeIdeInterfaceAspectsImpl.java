@@ -1,11 +1,11 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2024 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -34,23 +34,22 @@ import com.google.devtools.intellij.ideinfo.IntellijIdeInfo;
 import com.google.idea.blaze.base.async.FutureUtil;
 import com.google.idea.blaze.base.async.executor.BlazeExecutor;
 import com.google.idea.blaze.base.bazel.BuildSystem.BuildInvoker;
+import com.google.idea.blaze.base.buildview.BazelExecService;
 import com.google.idea.blaze.base.command.BlazeCommand;
 import com.google.idea.blaze.base.command.BlazeCommandName;
 import com.google.idea.blaze.base.command.BlazeFlags;
 import com.google.idea.blaze.base.command.BlazeInvocationContext;
 import com.google.idea.blaze.base.command.BlazeInvocationContext.ContextType;
-import com.google.idea.blaze.base.command.buildresult.BlazeArtifact;
-import com.google.idea.blaze.base.command.buildresult.BlazeArtifact.LocalFileArtifact;
-import com.google.idea.blaze.base.command.buildresult.BuildResultHelper;
-import com.google.idea.blaze.base.command.buildresult.OutputArtifact;
+import com.google.idea.blaze.base.command.buildresult.BuildResult;
+import com.google.idea.blaze.base.command.buildresult.LocalFileArtifact;
+import com.google.idea.blaze.base.command.buildresult.RemoteOutputArtifact;
 import com.google.idea.blaze.base.command.info.BlazeConfigurationHandler;
-import com.google.idea.blaze.base.filecache.ArtifactState;
 import com.google.idea.blaze.base.filecache.ArtifactsDiff;
 import com.google.idea.blaze.base.ideinfo.TargetIdeInfo;
 import com.google.idea.blaze.base.ideinfo.TargetKey;
 import com.google.idea.blaze.base.ideinfo.TargetMap;
 import com.google.idea.blaze.base.issueparser.BlazeIssueParser;
-import com.google.idea.blaze.base.lang.AdditionalLanguagesHelper;
+import com.google.idea.blaze.base.lang.LegacyAdditionalLanguagesHelper;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.BlazeVersionData;
 import com.google.idea.blaze.base.model.ProjectTargetData;
@@ -63,7 +62,6 @@ import com.google.idea.blaze.base.prefetch.PrefetchFileSource;
 import com.google.idea.blaze.base.prefetch.PrefetchService;
 import com.google.idea.blaze.base.prefetch.RemoteArtifactPrefetcher;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
-import com.google.idea.blaze.base.projectview.section.sections.AutomaticallyDeriveTargetsSection;
 import com.google.idea.blaze.base.projectview.section.sections.SyncFlagsSection;
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.Result;
@@ -81,7 +79,7 @@ import com.google.idea.blaze.base.settings.BuildBinaryType;
 import com.google.idea.blaze.base.sync.BlazeSyncBuildResult;
 import com.google.idea.blaze.base.sync.BuildPhaseSyncTask;
 import com.google.idea.blaze.base.sync.SyncProjectState;
-import com.google.idea.blaze.base.sync.aspects.BuildResult.Status;
+import com.google.idea.blaze.base.command.buildresult.BuildResult.Status;
 import com.google.idea.blaze.base.sync.aspects.strategy.AspectStrategy;
 import com.google.idea.blaze.base.sync.aspects.strategy.AspectStrategy.OutputGroup;
 import com.google.idea.blaze.base.sync.projectview.ImportRoots;
@@ -91,6 +89,10 @@ import com.google.idea.blaze.base.sync.sharding.ShardedBuildProgressTracker;
 import com.google.idea.blaze.base.sync.sharding.ShardedTargetList;
 import com.google.idea.blaze.base.toolwindow.Task;
 import com.google.idea.blaze.common.PrintOutput;
+import com.google.idea.blaze.common.artifact.ArtifactState;
+import com.google.idea.blaze.common.artifact.OutputArtifact;
+import com.google.idea.blaze.common.artifact.OutputArtifactWithoutDigest;
+import com.google.idea.blaze.exception.BuildException;
 import com.google.idea.common.experiments.BoolExperiment;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.progress.ProcessCanceledException;
@@ -98,8 +100,14 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Ref;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.util.text.StringUtil;
+import com.intellij.openapi.util.registry.Registry;
 import com.intellij.pom.NavigatableAdapter;
+import java.io.IOException;
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -107,6 +115,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -115,7 +124,11 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 import javax.annotation.Nullable;
+
+import org.jetbrains.annotations.NotNull;
+
 
 /** Implementation of BlazeIdeInterface based on aspects. */
 public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
@@ -161,12 +174,13 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
   }
 
   /** Returns the {@link OutputArtifact}s we want to track between syncs. */
-  private static ImmutableSet<OutputArtifact> getTrackedOutputs(BlazeBuildOutputs buildOutput) {
+  private static ImmutableSet<OutputArtifact> getTrackedOutputs(
+      BlazeBuildOutputs buildOutput) {
     // don't track intellij-info.txt outputs -- they're already tracked in
     // BlazeIdeInterfaceState
     Predicate<String> pathFilter = AspectStrategy.ASPECT_OUTPUT_FILE_PREDICATE.negate();
-    return buildOutput.getOutputGroupArtifacts(group -> true).stream()
-        .filter(a -> pathFilter.test(a.getRelativePath()))
+    return buildOutput.getOutputGroupArtifactsLegacySyncOnly(group -> true).stream()
+        .filter(a -> pathFilter.test(a.getBazelOutRelativePath()))
         .collect(toImmutableSet());
   }
 
@@ -181,22 +195,22 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
       @Nullable BlazeProjectData oldProjectData) {
     // If there was a partial error, make a best-effort attempt to sync. Retain
     // any old state that we have in an attempt not to lose too much code.
-    if (buildResult.getBuildResult().buildResult.status == BuildResult.Status.BUILD_ERROR
-        || buildResult.getBuildResult().buildResult.status == Status.FATAL_ERROR) {
+    if (buildResult.getBuildResult().buildResult().status == BuildResult.Status.BUILD_ERROR
+        || buildResult.getBuildResult().buildResult().status == Status.FATAL_ERROR) {
       mergeWithOldState = true;
     }
 
-    TargetMap oldTargetMap = oldProjectData != null ? oldProjectData.getTargetMap() : null;
+    TargetMap oldTargetMap = oldProjectData != null ? oldProjectData.targetMap() : null;
     BlazeIdeInterfaceState prevState =
-        oldProjectData != null ? oldProjectData.getTargetData().ideInterfaceState : null;
+        oldProjectData != null ? oldProjectData.targetData().ideInterfaceState : null;
 
     Predicate<String> ideInfoPredicate = AspectStrategy.ASPECT_OUTPUT_FILE_PREDICATE;
     Collection<OutputArtifact> files =
         buildResult
             .getBuildResult()
-            .getOutputGroupArtifacts(group -> group.startsWith(OutputGroup.INFO.prefix))
+            .getOutputGroupArtifactsLegacySyncOnly(group -> group.startsWith(OutputGroup.INFO.prefix))
             .stream()
-            .filter(f -> ideInfoPredicate.test(f.getKey()))
+            .filter(f -> ideInfoPredicate.test(f.getBazelOutRelativePath()))
             .distinct()
             .collect(toImmutableList());
 
@@ -217,7 +231,7 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
 
     context.output(
         PrintOutput.log(
-            String.format(
+            String.format(Locale.ROOT,
                 "Total rules: %d, new/changed: %d, removed: %d",
                 targetCount, diff.getUpdatedOutputs().size(), removedCount)));
 
@@ -225,11 +239,13 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
         RemoteArtifactPrefetcher.getInstance()
             .downloadArtifacts(
                 /* projectName= */ project.getName(),
-                /* outputArtifacts= */ BlazeArtifact.getRemoteArtifacts(diff.getUpdatedOutputs()));
+                /* outputArtifacts= */ RemoteOutputArtifact.getRemoteArtifacts(
+                    diff.getUpdatedOutputs()));
     ListenableFuture<?> loadFilesInJvmFuture =
         RemoteArtifactPrefetcher.getInstance()
             .loadFilesInJvm(
-                /* outputArtifacts= */ BlazeArtifact.getRemoteArtifacts(diff.getUpdatedOutputs()));
+                /* outputArtifacts= */ RemoteOutputArtifact.getRemoteArtifacts(
+                    diff.getUpdatedOutputs()));
 
     if (!FutureUtil.waitForFuture(
             context, Futures.allAsList(downloadArtifactsFuture, loadFilesInJvmFuture))
@@ -243,7 +259,7 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
     ListenableFuture<?> fetchLocalFilesFuture =
         PrefetchService.getInstance()
             .prefetchFiles(
-                /* files= */ BlazeArtifact.getLocalFiles(diff.getUpdatedOutputs()),
+                /* files= */ LocalFileArtifact.getLocalFiles(diff.getUpdatedOutputs()),
                 /* refetchCachedFiles= */ true,
                 /* fetchFileTypes= */ false);
     if (!FutureUtil.waitForFuture(context, fetchLocalFilesFuture)
@@ -268,7 +284,6 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
             prevState,
             diff,
             configHandler,
-            projectState.getBlazeVersionData(),
             projectState.getLanguageSettings(),
             importRoots,
             mergeWithOldState,
@@ -284,7 +299,8 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
           ImmutableList<OutputArtifact> resolveOutputs =
               buildResult
                   .getBuildResult()
-                  .getOutputGroupArtifacts(group -> group.startsWith(OutputGroup.RESOLVE.prefix));
+                  .getOutputGroupArtifactsLegacySyncOnly(
+                      group -> group.startsWith(OutputGroup.RESOLVE.prefix));
           prefetchGenfiles(context, resolveOutputs);
         });
     return state;
@@ -297,12 +313,11 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
       @Nullable BlazeIdeInterfaceState prevState,
       ArtifactsDiff fileState,
       BlazeConfigurationHandler configHandler,
-      BlazeVersionData versionData,
       WorkspaceLanguageSettings languageSettings,
       ImportRoots importRoots,
       boolean mergeWithOldState,
       @Nullable TargetMap oldTargetMap) {
-    AspectStrategy aspectStrategy = AspectStrategy.getInstance(versionData);
+    AspectStrategy aspectStrategy = AspectStrategy.getInstance();
     Result<TargetMapAndInterfaceState> result =
         Scope.push(
             parentContext,
@@ -347,7 +362,7 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
 
               // Read protos from any new files
               List<ListenableFuture<TargetFilePair>> futures = Lists.newArrayList();
-              for (OutputArtifact file : fileState.getUpdatedOutputs()) {
+              for (OutputArtifactWithoutDigest file : fileState.getUpdatedOutputs()) {
                 futures.add(
                     executor.submit(
                         () -> {
@@ -374,12 +389,12 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
               try {
                 for (TargetFilePair targetFilePair : Futures.allAsList(futures).get()) {
                   if (targetFilePair.target != null) {
-                    OutputArtifact file = targetFilePair.file;
-                    String config = file.getConfigurationMnemonic();
+                    OutputArtifactWithoutDigest file = targetFilePair.file;
+                    String config = file.getConfigurationMnemonicForLegacySync();
                     configurations.add(config);
                     TargetKey key = targetFilePair.target.getKey();
                     if (targetMap.putIfAbsent(key, targetFilePair.target) == null) {
-                      state.ideInfoToTargetKey.forcePut(file.getKey(), key);
+                      state.ideInfoToTargetKey.forcePut(file.getBazelOutRelativePath(), key);
                     } else {
                       if (!newTargets.add(key)) {
                         duplicateTargetLabels++;
@@ -387,7 +402,7 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
                       // prioritize the default configuration over build order
                       if (Objects.equals(config, configHandler.defaultConfigurationPathComponent)) {
                         targetMap.put(key, targetFilePair.target);
-                        state.ideInfoToTargetKey.forcePut(file.getKey(), key);
+                        state.ideInfoToTargetKey.forcePut(file.getBazelOutRelativePath(), key);
                       }
                     }
                   }
@@ -401,18 +416,18 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
 
               context.output(
                   PrintOutput.log(
-                      String.format(
+                      String.format(Locale.ROOT,
                           "Loaded %d aspect files, total size %dkB",
                           fileState.getUpdatedOutputs().size(), totalSizeLoaded.get() / 1024)));
               if (duplicateTargetLabels > 0) {
                 context.output(
                     new PerformanceWarning(
-                        String.format(
+                        String.format(Locale.ROOT,
                             "There were %d duplicate rules, built with the following "
                                 + "configurations: %s.\nYour IDE sync is slowed down by ~%d%%.",
-                            duplicateTargetLabels,
-                            configurations,
-                            (100 * duplicateTargetLabels / targetMap.size()))));
+                                      duplicateTargetLabels,
+                                      configurations,
+                                      (100 * duplicateTargetLabels / targetMap.size()))));
               }
 
               // remove previously synced targets which are now unsupported
@@ -461,7 +476,10 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
     if (kind.getLanguageClasses().stream().anyMatch(languageSettings::isLanguageActive)) {
       return false;
     }
-    if (importRoots.importAsSource(target.getKey().getLabel())) {
+    if (null != target.getPyIdeInfo() && target.getPyIdeInfo().isCodeGenerator()) {
+      return false;
+    }
+    if (importRoots.importAsSource(target.getKey().label())) {
       ignoredLanguages.addAll(kind.getLanguageClasses());
     }
     return true;
@@ -482,7 +500,7 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
       return TargetIdeInfo.fromProto(message, syncTime);
     }
     TargetKey key = message.hasKey() ? TargetKey.fromProto(message.getKey()) : null;
-    if (key != null && importRoots.importAsSource(key.getLabel())) {
+    if (key != null && importRoots.importAsSource(key.label())) {
       ignoredLanguages.addAll(kind.getLanguageClasses());
     }
     return null;
@@ -501,11 +519,11 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
             + "isn't enabled. Click here to enable support for: "
             + Joiner.on(", ").join(sorted);
     IssueOutput.warn(msg)
-        .navigatable(
+        .withNavigatable(
             new NavigatableAdapter() {
               @Override
               public void navigate(boolean requestFocus) {
-                AdditionalLanguagesHelper.enableLanguageSupport(project, sorted);
+                LegacyAdditionalLanguagesHelper.enableLanguageSupport(project, sorted);
               }
             })
         .submit(context);
@@ -524,7 +542,7 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
     // TODO: handle prefetching for arbitrary OutputArtifacts
     ImmutableList<File> files =
         artifacts.stream()
-            .filter(a -> filter.test(a.getKey()))
+            .filter(a -> filter.test(a.getBazelOutRelativePath()))
             .filter(o -> o instanceof LocalFileArtifact)
             .map(o -> ((LocalFileArtifact) o).getFile())
             .collect(toImmutableList());
@@ -551,10 +569,10 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
   }
 
   private static class TargetFilePair {
-    private final OutputArtifact file;
+    private final OutputArtifactWithoutDigest file;
     private final TargetIdeInfo target;
 
-    TargetFilePair(OutputArtifact file, TargetIdeInfo target) {
+    TargetFilePair(OutputArtifactWithoutDigest file, TargetIdeInfo target) {
       this.file = file;
       this.target = target;
     }
@@ -571,8 +589,9 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
       ShardedTargetList shardedTargets,
       WorkspaceLanguageSettings workspaceLanguageSettings,
       ImmutableSet<OutputGroup> outputGroups,
-      BlazeInvocationContext blazeInvocationContext) {
-    AspectStrategy aspectStrategy = AspectStrategy.getInstance(blazeVersion);
+      BlazeInvocationContext blazeInvocationContext,
+      boolean invokeParallel) {
+    AspectStrategy aspectStrategy = AspectStrategy.getInstance();
 
     final Ref<BlazeBuildOutputs> combinedResult = new Ref<>();
 
@@ -601,10 +620,25 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
       context.output(SummaryOutput.output(Prefix.INFO, message).dedupe());
       context.output(PrintOutput.log(message));
     }
+
+    final var additionalBlazeFlagsBuilder = ImmutableList.<String>builder();
+
     // Fetching blaze flags here using parent context, to avoid duplicate fetch for every shard.
-    List<String> additionalBlazeFlags =
-        BlazeFlags.blazeFlags(
-            project, projectViewSet, BlazeCommandName.BUILD, context, blazeInvocationContext);
+    additionalBlazeFlagsBuilder.addAll(BlazeFlags.blazeFlags(
+        project,
+        projectViewSet,
+        BlazeCommandName.BUILD,
+        context,
+        blazeInvocationContext
+    ));
+
+    // The --skip_incompatible_explicit_targets flag is only available in Bazel 7+
+    if (blazeVersion.bazelIsAtLeastVersion(7, 0, 0)) {
+      additionalBlazeFlagsBuilder.add(BlazeFlags.SKIP_INCOMPATIBLE_TARGETS);
+    }
+
+    final var additionalBlazeFlags = additionalBlazeFlagsBuilder.build();
+
     Function<List<? extends TargetExpression>, BuildResult> invocation =
         targets ->
             Scope.push(
@@ -622,38 +656,41 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
                   setupToolWindow(project, childContext, workspaceRoot, task);
                   progressTracker.onBuildStarted(context);
 
-                  BlazeBuildOutputs result =
-                      runBuildForTargets(
-                          project,
-                          childContext,
-                          workspaceRoot,
-                          invoker,
-                          projectViewSet,
-                          workspaceLanguageSettings.getActiveLanguages(),
-                          targets,
-                          aspectStrategy,
-                          outputGroups,
-                          additionalBlazeFlags);
-
-                  if (result.buildResult.outOfMemory()) {
-                    logger.warn(
-                        String.format(
-                            "Build shard failed with OOM error build-id=%s",
-                            result.getBuildIds().stream().findFirst().orElse(null)));
+                  try {
+                    BlazeBuildOutputs result =
+                        runBuildForTargets(
+                            project,
+                            invoker,
+                            childContext,
+                            workspaceLanguageSettings.getActiveLanguages(),
+                            targets,
+                            aspectStrategy,
+                            outputGroups,
+                            additionalBlazeFlags);
+                    if (result.buildResult().outOfMemory()) {
+                      logger.warn(
+                          String.format(
+                              "Build shard failed with OOM error build-id=%s",
+                              result.getBuildIds().stream().findFirst().orElse(null)));
+                    }
+                    printShardFinishedSummary(context, task.getName(), result, invoker);
+                    synchronized (combinedResult) {
+                      combinedResult.set(
+                          combinedResult.isNull()
+                              ? result
+                              : combinedResult.get().updateOutputs(result));
+                    }
+                    return result.buildResult();
+                  } catch (BuildException e) {
+                    context.handleException("Failed to build targets", e);
+                    return BuildResult.FATAL_ERROR;
+                  } finally {
+                    progressTracker.onBuildCompleted(context);
                   }
-
-                  progressTracker.onBuildCompleted(context); // TODO(b/216104482) track failures
-                  printShardFinishedSummary(context, task.getName(), result, invoker);
-                  synchronized (combinedResult) {
-                    combinedResult.set(
-                        combinedResult.isNull()
-                            ? result
-                            : combinedResult.get().updateOutputs(result));
-                  }
-                  return result.buildResult;
                 });
     BuildResult buildResult =
-        shardedTargets.runShardedCommand(project, context, progressMessage, invocation, invoker);
+        shardedTargets.runShardedCommand(
+            project, context, progressMessage, invocation, invoker, invokeParallel);
     if (combinedResult.isNull()
         || (!BuildPhaseSyncTask.continueSyncOnOom.getValue()
             && buildResult.status == Status.FATAL_ERROR)) {
@@ -664,15 +701,18 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
 
   /* Prints summary only for failed shards */
   private void printShardFinishedSummary(
-      BlazeContext context, String taskName, BlazeBuildOutputs result, BuildInvoker invoker) {
-    if (result.buildResult.status == Status.SUCCESS) {
+      BlazeContext context,
+      String taskName,
+      BlazeBuildOutputs result,
+      BuildInvoker invoker) {
+    if (result.buildResult().status == Status.SUCCESS) {
       return;
     }
     StringBuilder outputText = new StringBuilder();
     outputText.append(
         String.format(
             "%s finished with %s errors. ",
-            taskName, result.buildResult.status == Status.BUILD_ERROR ? "build" : "fatal"));
+            taskName, result.buildResult().status == Status.BUILD_ERROR ? "build" : "fatal"));
     String invocationId =
         Iterables.getOnlyElement(
             result.getBuildIds(),
@@ -707,43 +747,66 @@ public class BlazeIdeInterfaceAspectsImpl implements BlazeIdeInterface {
   /** Runs a blaze build for the given output groups. */
   private static BlazeBuildOutputs runBuildForTargets(
       Project project,
-      BlazeContext context,
-      WorkspaceRoot workspaceRoot,
       BuildInvoker invoker,
-      ProjectViewSet viewSet,
+      BlazeContext context,
       ImmutableSet<LanguageClass> activeLanguages,
       List<? extends TargetExpression> targets,
       AspectStrategy aspectStrategy,
       ImmutableSet<OutputGroup> outputGroups,
-      List<String> additionalBlazeFlags) {
+      List<String> additionalBlazeFlags)
+      throws BuildException {
 
-    boolean onlyDirectDeps =
-        viewSet.getScalarValue(AutomaticallyDeriveTargetsSection.KEY).orElse(false);
+    Path targetPatternFile = prepareTargetPatternFile(project, targets);
+    BlazeCommand.Builder builder = BlazeCommand.builder(invoker, BlazeCommandName.BUILD);
+    builder
+        .addTargets(targets)
+        .addBlazeFlags(BlazeFlags.KEEP_GOING)
+        .addBlazeFlags(BlazeFlags.DISABLE_VALIDATIONS) // b/145245918: don't run lint during sync
+        .addBlazeFlags(additionalBlazeFlags);
 
-    try (BuildResultHelper buildResultHelper = invoker.createBuildResultHelper()) {
-
-      BlazeCommand.Builder builder = BlazeCommand.builder(invoker, BlazeCommandName.BUILD);
-      builder
-          .addTargets(targets)
-          .addBlazeFlags(BlazeFlags.KEEP_GOING)
-          .addBlazeFlags(buildResultHelper.getBuildFlags())
-          .addBlazeFlags(additionalBlazeFlags);
-      if (disableValidationActionExperiment.getValue()) {
-        builder.addBlazeFlags(BlazeFlags.DISABLE_VALIDATIONS);
-      }
-
-      // b/236031309: Sync builds that use rabbit-cli rely on build-changelist.txt being populated
-      // with the correct build request id. We force Blaze to emit the correct build-changelist.
-      if (noFakeStampExperiment.getValue() && invoker.getType() == BuildBinaryType.RABBIT) {
-        builder.addBlazeFlags("--nofake_stamp_data");
-      }
-
-      aspectStrategy.addAspectAndOutputGroups(
-          builder, outputGroups, activeLanguages, onlyDirectDeps);
-
-      return invoker
-          .getCommandRunner()
-          .run(project, builder, buildResultHelper, workspaceRoot, context);
+    // b/236031309: Sync builds that use rabbit-cli rely on build-changelist.txt being populated
+    // with the correct build request id. We force Blaze to emit the correct build-changelist.
+    if (noFakeStampExperiment.getValue() && invoker.getType() == BuildBinaryType.RABBIT) {
+      builder.addBlazeFlags("--nofake_stamp_data");
     }
+
+    aspectStrategy.addAspectAndOutputGroups(project, builder, outputGroups, activeLanguages);
+    try {
+      return BazelExecService.of(project).build(context, builder);
+    } catch (com.intellij.execution.ExecutionException e) {
+      throw new BuildException("Failed to build targets", e);
+    } finally {
+      if (!Registry.is("bazel.sync.keep.target.files")) {
+        try {
+          Files.deleteIfExists(targetPatternFile);
+        } catch (IOException e) {
+          logger.error("Failed to delete target pattern file", e);
+        }
+      }
+    }
+  }
+
+  private static @NotNull Path prepareTargetPatternFile(Project project, List<? extends TargetExpression> targets) throws BuildException {
+    Path targetPatternFile = null;
+    try {
+      Path targetsDir = Paths.get(project.getBasePath()).resolve("targets");
+      Files.createDirectories(targetsDir);
+      targetPatternFile = Files.createTempFile(targetsDir, "targets-", "");
+      String targetsString =
+          targets.stream()
+              .map(t -> t.toString())
+              .collect(Collectors.joining(System.lineSeparator()));
+      Files.writeString(targetPatternFile, targetsString, StandardOpenOption.WRITE);
+    } catch (IOException e) {
+      if (targetPatternFile != null) {
+        try {
+          Files.deleteIfExists(targetPatternFile);
+        } catch (IOException ex) {
+          throw new BuildException("Couldn't delete file after creation failure", e);
+        }
+      }
+      throw new BuildException("Couldn't create target pattern file", e);
+    }
+    return targetPatternFile;
   }
 }

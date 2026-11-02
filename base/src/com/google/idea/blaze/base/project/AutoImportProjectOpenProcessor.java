@@ -1,4 +1,22 @@
+/*
+ * Copyright 2026 The Bazel Authors. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.idea.blaze.base.project;
+
+import static com.google.idea.blaze.base.project.BlazeProjectOpenProcessor.getIdeaSubdirectory;
 
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
@@ -6,14 +24,10 @@ import com.google.idea.blaze.base.projectview.ProjectView;
 import com.google.idea.blaze.base.projectview.ProjectView.Builder;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
 import com.google.idea.blaze.base.projectview.parser.ProjectViewParser;
-import com.google.idea.blaze.base.projectview.section.ListSection;
 import com.google.idea.blaze.base.projectview.section.ScalarSection;
-import com.google.idea.blaze.base.projectview.section.sections.AutomaticallyDeriveTargetsSection;
-import com.google.idea.blaze.base.projectview.section.sections.DirectoryEntry;
-import com.google.idea.blaze.base.projectview.section.sections.DirectorySection;
+import com.google.idea.blaze.base.projectview.section.sections.ImportSection;
 import com.google.idea.blaze.base.projectview.section.sections.TextBlock;
 import com.google.idea.blaze.base.projectview.section.sections.TextBlockSection;
-import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BuildSystemName;
 import com.google.idea.blaze.base.sync.data.BlazeDataStorage;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolver;
@@ -22,7 +36,6 @@ import com.google.idea.blaze.base.wizard2.BlazeProjectCommitException;
 import com.google.idea.blaze.base.wizard2.BlazeProjectImportBuilder;
 import com.google.idea.blaze.base.wizard2.CreateFromScratchProjectViewOption;
 import com.google.idea.blaze.base.wizard2.WorkspaceTypeData;
-import com.google.idea.sdkcompat.general.BaseSdkCompat;
 import com.intellij.ide.SaveAndSyncHandler;
 import com.intellij.ide.impl.OpenProjectTask;
 import com.intellij.ide.impl.ProjectUtil;
@@ -30,6 +43,7 @@ import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectManager;
 import com.intellij.openapi.project.ex.ProjectManagerEx;
+import com.intellij.openapi.util.Key;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.util.registry.Registry;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -39,7 +53,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.Optional;
 import javax.swing.Icon;
 import org.jetbrains.annotations.Nls;
 import org.jetbrains.annotations.NotNull;
@@ -59,13 +75,20 @@ import org.jetbrains.annotations.Nullable;
  */
 public class AutoImportProjectOpenProcessor extends ProjectOpenProcessor {
 
+  public static final String[] WORKSPACE_MARKER_FILES = {"WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"};
+
+  public static final String MANAGED_PROJECT_RELATIVE_PATH = "tools/intellij/.managed.bazelproject";
+  public static final String PROJECT_VIEW_FROM_ENV = "INTELLIJ_BAZEL_PROJECT_VIEW_TEMPLATE";
+
+  static final Key<Boolean> PROJECT_AUTO_IMPORTED = Key.create("bazel.project.auto_imported");
+
   private static final Logger LOG = Logger.getInstance(AutoImportProjectOpenProcessor.class);
 
   @Override
   public @NotNull
   @Nls
   String getName() {
-    return Blaze.defaultBuildSystemName() + " Project";
+    return "Bazel";
   }
 
   @javax.annotation.Nullable
@@ -76,7 +99,7 @@ public class AutoImportProjectOpenProcessor extends ProjectOpenProcessor {
 
   @Override
   public boolean isStrongProjectInfoHolder() {
-    return true;
+      return Registry.is("bazel.project.auto.open");
   }
 
   @Override
@@ -86,13 +109,14 @@ public class AutoImportProjectOpenProcessor extends ProjectOpenProcessor {
 
   @Override
   public boolean canOpenProject(@NotNull VirtualFile virtualFile) {
+    // Auto import activated only if it is not disabled, there is no existing project model in the folder
+    // and Bazel workspace is detected.
     return !Registry.is("bazel.auto.import.disabled")
-            && isBazelWorkspace(virtualFile);
+            && getIdeaSubdirectory(virtualFile) == null && isBazelWorkspace(virtualFile);
   }
 
   private boolean isBazelWorkspace(VirtualFile virtualFile) {
-    return virtualFile.findChild("WORKSPACE") != null
-        || virtualFile.findChild("WORKSPACE.bazel") != null;
+    return Arrays.stream(WORKSPACE_MARKER_FILES).anyMatch((file) -> virtualFile.findChild(file) != null);
   }
 
   @Override
@@ -104,12 +128,16 @@ public class AutoImportProjectOpenProcessor extends ProjectOpenProcessor {
   ) {
 
     ProjectManager pm = ProjectManager.getInstance();
-    if (projectToClose != null) {
+    if (projectToClose != null && projectToClose != pm.getDefaultProject()) {
       pm.closeAndDispose(projectToClose);
     }
 
     Project newProject = createProject(virtualFile);
-    Objects.requireNonNull(newProject);
+    if (newProject == null) {
+      return null;
+    }
+
+    newProject.putUserData(PROJECT_AUTO_IMPORTED, true);
 
     Path projectFilePath = Paths.get(Objects.requireNonNull(newProject.getProjectFilePath()));
     ProjectUtil.updateLastProjectLocation(projectFilePath);
@@ -117,7 +145,7 @@ public class AutoImportProjectOpenProcessor extends ProjectOpenProcessor {
     ProjectManagerEx.getInstanceEx()
             .openProject(
                     projectFilePath,
-                    BaseSdkCompat.createOpenProjectTask(newProject)
+                    OpenProjectTask.build().withProject(newProject)
             );
     SaveAndSyncHandler.getInstance().scheduleProjectSave(newProject);
     return newProject;
@@ -164,12 +192,13 @@ public class AutoImportProjectOpenProcessor extends ProjectOpenProcessor {
       LOG.error("Failed to commit project import builder", e);
     }
 
-    Project newProject = builder.createProject(name, projectFilePath);
-    if (newProject == null) {
-      LOG.error("Failed to Bazel create project");
+    Optional<Project> returnedValue = ExtendableBazelProjectCreator.getInstance()
+        .createProject(builder, name, projectFilePath);
+    if (returnedValue.isEmpty()) {
       return null;
     }
-
+	
+    Project newProject = returnedValue.get();
     newProject.save();
 
     if (!builder.validate(null, newProject)) {
@@ -191,22 +220,27 @@ public class AutoImportProjectOpenProcessor extends ProjectOpenProcessor {
 
   private ProjectView defaultEmptyProjectView() {
     Builder projectViewBuilder = ProjectView.builder();
-
-    projectViewBuilder.add(
-        ListSection
-            .builder(DirectorySection.KEY)
-            .add(DirectoryEntry.include(new WorkspacePath(".")))
-            .build()
-    );
-
-    projectViewBuilder.add(TextBlockSection.of(TextBlock.newLine()));
-
-    projectViewBuilder.add(
-        ScalarSection
-            .builder(AutomaticallyDeriveTargetsSection.KEY)
-            .set(false)
-            .build()
-    );
+    projectViewBuilder.add(TextBlockSection.of(TextBlock.of(
+            1,
+            "# This is a projectview file generated automatically during bazel project auto-import ",
+            "# For more documentation, please visit https://ij.bazel.build/docs/project-views.html",
+            "# If your repository contains predefined .projectview files, you use 'import' directive to include them.",
+            "# Otherwise, please specify 'directories' and 'targets' you want to be imported",
+            " ",
+            "# By default, we keep the 'directories' section empty, so nothing is imported.",
+            "# Specify the source directories you wish to include in the 'directories' section.",
+            "# ",
+            "# After that, please look at the `derive_targets_from_directories` section and then:",
+            "#   - either keep it set to `true` to import ALL targets in the directories section",
+            "#   - or set it to `false` and add `targets` section to choose the targets selectively",
+            "",
+            "# directories: ",
+            "#   Specify the source directories to be imported here",
+            "",
+            "view_project_root: true",
+            "derive_targets_from_directories: true",
+            ""
+    )));
 
     return projectViewBuilder.build();
   }
@@ -215,8 +249,7 @@ public class AutoImportProjectOpenProcessor extends ProjectOpenProcessor {
       WorkspacePathResolver pathResolver) {
 
     // first check env for project view template
-    String projectViewFileFromEnv = System.getenv(
-        "INTELLIJ_BAZEL_PROJECT_VIEW_TEMPLATE");
+    String projectViewFileFromEnv = System.getenv(PROJECT_VIEW_FROM_ENV);
 
     if (projectViewFileFromEnv != null) {
       return fromFileProjectView(Paths.get(projectViewFileFromEnv), pathResolver);
@@ -224,9 +257,11 @@ public class AutoImportProjectOpenProcessor extends ProjectOpenProcessor {
 
     // second check managed project view template
     Path managedProjectViewFilePath = workspaceRoot.toNioPath()
-        .resolve("tools/intellij/.managed.bazelproject");
+        .resolve(MANAGED_PROJECT_RELATIVE_PATH);
     if (managedProjectViewFilePath.toFile().exists()) {
-      return fromFileProjectView(managedProjectViewFilePath, pathResolver);
+      return ProjectView.builder().add(
+          ScalarSection.builder(ImportSection.KEY).set(
+              WorkspacePath.createIfValid(MANAGED_PROJECT_RELATIVE_PATH))).build();
     }
 
     // create minimal project view file manually

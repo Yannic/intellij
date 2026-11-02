@@ -16,6 +16,7 @@
 package com.google.idea.blaze.base.command;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.idea.blaze.base.command.BlazeInvocationContext.ContextType;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
@@ -23,9 +24,11 @@ import com.google.idea.blaze.base.projectview.section.sections.BuildFlagsSection
 import com.google.idea.blaze.base.projectview.section.sections.SyncFlagsSection;
 import com.google.idea.blaze.base.projectview.section.sections.TestFlagsSection;
 import com.google.idea.blaze.base.scope.BlazeContext;
-import com.intellij.execution.configurations.ParametersList;
+import com.intellij.execution.util.ProgramParametersConfigurator;
 import com.intellij.openapi.project.Project;
 import com.intellij.util.PlatformUtils;
+
+import java.util.ArrayList;
 import java.util.List;
 
 /** The collection of all the Bazel flag strings we use. */
@@ -46,6 +49,8 @@ public final class BlazeFlags {
   public static final String DISABLE_TEST_SHARDING = "--test_sharding_strategy=disabled";
   // Filters the unit tests that are run (used with regexp for Java/Robolectric tests).
   public static final String TEST_FILTER = "--test_filter";
+  // Arguments passed to the test binary.
+  public static final String TEST_ARG = "--test_arg";
   // Re-run the test even if the results are cached.
   public static final String NO_CACHE_TEST_RESULTS = "--nocache_test_results";
   // Environment variables for the test runner
@@ -56,10 +61,22 @@ public final class BlazeFlags {
 
   // Avoid running validation actions at the end of build. This flag is expected to be set only
   // during syncing projects.
-  public static final String DISABLE_VALIDATIONS = "--noexperimental_run_validations";
+  public static final String DISABLE_VALIDATIONS = "--norun_validations";
+
+  // Since query cannot resolve target_compatible_with constraints we try to explicitly build
+  // incompatible targets during the sync. This flags allows bazel to skip incompatible targets
+  // even if they were explicitly requested.
+  public static final String SKIP_INCOMPATIBLE_TARGETS = "--skip_incompatible_explicit_targets";
+
+  // Prevents bazel from creating/updating the bazel-* convenience symlinks. Used for sync-internal
+  // execution-phase invocations that are built outside ProjectViewFlagsProvider.
+  public static final String NO_CONVENIENCE_SYMLINKS = "--experimental_convenience_symlinks=ignore";
 
   // Custom build metadata. This option takes a key-value pair as an argument.
   public static final String BUILD_METADATA = "--build_metadata=";
+
+  // New line separated file with list of target patterns to build.
+  public static final String TARGET_PATTERN_FILE = "--target_pattern_file";
 
   /** Flags to add to blaze/bazel invocations of the given type. */
   public static List<String> blazeFlags(
@@ -72,25 +89,19 @@ public final class BlazeFlags {
     for (BuildFlagsProvider buildFlagsProvider : BuildFlagsProvider.EP_NAME.getExtensions()) {
       buildFlagsProvider.addBuildFlags(project, projectViewSet, command, invocationContext, flags);
     }
-    flags.addAll(expandBuildFlags(projectViewSet.listItems(BuildFlagsSection.KEY)));
+
     if (invocationContext.type() == ContextType.Sync) {
       for (BuildFlagsProvider buildFlagsProvider : BuildFlagsProvider.EP_NAME.getExtensions()) {
         buildFlagsProvider.addSyncFlags(
             project, projectViewSet, command, context, invocationContext, flags);
       }
-      flags.addAll(expandBuildFlags(projectViewSet.listItems(SyncFlagsSection.KEY)));
     }
-    if (BlazeCommandName.TEST.equals(command)) {
-      flags.addAll(expandBuildFlags(projectViewSet.listItems(TestFlagsSection.KEY)));
-    }
+
     return flags;
   }
 
   public static final String ADB_PATH = "--adb_path";
   public static final String DEVICE = "--device";
-
-  // Pass-through arg for sending test arguments.
-  public static final String TEST_ARG = "--test_arg=";
 
   private static final String TOOL_TAG = "--tool_tag=ijwb:";
 
@@ -105,12 +116,11 @@ public final class BlazeFlags {
   public static final String ADB = "--adb";
 
   // We add this to every single BlazeCommand instance. It's for tracking usage.
-  @VisibleForTesting
   public static String getToolTagFlag() {
     String platformPrefix = PlatformUtils.getPlatformPrefix();
 
     // IDEA Community Edition is "Idea", whereas IDEA Ultimate Edition is "idea".
-    // That's dumb. Let's make them more useful.
+    // That's confusing. Let's make them more useful.
     if (PlatformUtils.isIdeaCommunity()) {
       platformPrefix = "IDEA:community";
     } else if (PlatformUtils.isIdeaUltimate()) {
@@ -123,9 +133,11 @@ public final class BlazeFlags {
   public static List<String> expandBuildFlags(List<String> flags) {
     // This built-in IntelliJ class will do macro expansion using
     // both your environment and your Settings > Behavior > Path Variables
-    ParametersList parametersList = new ParametersList();
-    parametersList.addAll(flags);
-    return parametersList.getList();
+    List<String> expandedFlags = new ArrayList<>();
+    for (String flag : flags) {
+        expandedFlags.add(ProgramParametersConfigurator.expandMacros(flag));
+    }
+    return expandedFlags;
   }
 
   private BlazeFlags() {}

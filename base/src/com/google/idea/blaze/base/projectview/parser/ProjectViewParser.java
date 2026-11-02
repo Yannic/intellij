@@ -33,7 +33,7 @@ import java.util.Set;
 
 /** Parses and writes project views. */
 public class ProjectViewParser {
-
+  public static final int TEMPORARY_LINE_NUMBER = -1; // On ly use if you are creating a ProjectView, and then you would parse the persisted string to generate a ProjectVew file with valid line numbers
   private final BlazeContext context;
   private final WorkspacePathResolver workspacePathResolver;
   private final boolean recursive;
@@ -48,6 +48,10 @@ public class ProjectViewParser {
   }
 
   public void parseProjectView(File projectViewFile) {
+    parseProjectView(projectViewFile, Sections.getParsers());
+  }
+
+  public void parseProjectView(File projectViewFile, List<SectionParser> sectionParsers) {
     if (!encounteredProjectViewFiles.add(projectViewFile)) {
       return;
     }
@@ -64,22 +68,25 @@ public class ProjectViewParser {
       return;
     }
     parseProjectView(
-        new ParseContext(context, workspacePathResolver, projectViewFile, projectViewText));
+        new ParseContext(context, workspacePathResolver, projectViewFile, projectViewText), sectionParsers);
   }
 
-  public void parseProjectView(String text) {
+  public void parseProjectView(String text, List<SectionParser> sectionParsers) {
     if (text.isEmpty()) {
       ProjectView projectView = new ProjectView(ImmutableList.of());
       projectViewFiles.add(new ProjectViewSet.ProjectViewFile(projectView, null));
       return;
     }
-    parseProjectView(new ParseContext(context, workspacePathResolver, null, text));
+    parseProjectView(new ParseContext(context, workspacePathResolver, null, text), sectionParsers);
   }
 
-  private void parseProjectView(ParseContext parseContext) {
+  public void parseProjectView(String text) {
+    parseProjectView(text, Sections.getParsers());
+  }
+
+  private void parseProjectView(ParseContext parseContext, List<SectionParser> sectionParsers) {
     ImmutableList.Builder<Section<?>> sections = ImmutableList.builder();
 
-    List<SectionParser> sectionParsers = Sections.getParsers();
     while (!parseContext.atEnd()) {
       Section<?> section = null;
       for (SectionParser sectionParser : sectionParsers) {

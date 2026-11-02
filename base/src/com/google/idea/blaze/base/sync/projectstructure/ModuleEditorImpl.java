@@ -24,11 +24,11 @@ import com.google.idea.blaze.base.settings.BlazeImportSettings;
 import com.google.idea.blaze.base.sync.BlazeSyncPlugin;
 import com.google.idea.blaze.base.sync.data.BlazeDataStorage;
 import com.google.idea.blaze.common.PrintOutput;
-import com.google.idea.sdkcompat.general.BaseSdkCompat;
 import com.intellij.ide.highlighter.ModuleFileType;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.externalSystem.service.project.IdeModifiableModelsProvider;
+import com.intellij.openapi.externalSystem.service.project.IdeModifiableModelsProviderImpl;
 import com.intellij.openapi.module.ModifiableModuleModel;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
@@ -39,9 +39,11 @@ import com.intellij.openapi.roots.ModifiableRootModel;
 import com.intellij.openapi.roots.impl.ModifiableModelCommitter;
 import com.intellij.openapi.vfs.VfsUtil;
 import com.intellij.openapi.vfs.VirtualFile;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import javax.annotation.Nullable;
 
@@ -59,7 +61,7 @@ public class ModuleEditorImpl implements BlazeSyncPlugin.ModuleEditor {
 
   public ModuleEditorImpl(Project project, BlazeImportSettings importSettings) {
     this.project = project;
-    modelsProvider = BaseSdkCompat.createModifiableModelsProvider(project);
+    modelsProvider = new IdeModifiableModelsProviderImpl(project);
     this.moduleModel = modelsProvider.getModifiableModuleModel();
 
     this.imlDirectory = getImlDirectory(importSettings);
@@ -75,22 +77,12 @@ public class ModuleEditorImpl implements BlazeSyncPlugin.ModuleEditor {
     Module module = moduleModel.findModuleByName(moduleName);
     if (module == null) {
       File imlFile = new File(imlDirectory, moduleName + ModuleFileType.DOT_DEFAULT_EXTENSION);
-      removeImlFile(imlFile);
+      VirtualFile virtualImlFile = VfsUtil.findFileByIoFile(imlFile, true);
+      removeImlFile(virtualImlFile);
       module = moduleModel.newModule(imlFile.getPath(), moduleType.getId());
       module.setOption(EXTERNAL_SYSTEM_ID_KEY, EXTERNAL_SYSTEM_ID_VALUE);
     }
-    // setOption(..) can be slow on existing modules when the new project model is used. From
-    // 2021.2.1 on, setOption(..) will first check whether the option already has the passed value
-    // before continuing with the remaining operations
-    // (see https://youtrack.jetbrains.com/issue/IDEA-274168#focus=Comments-27-5086318.0-0). Until
-    // then, we explicitly do the check ourselves. This should help to avoid the slowness as most of
-    // the existing modules should already be configured to have the right type.
-    // #api211 Verify that 2021.2 contains the necessary fix. If so, remove the additional check.
-    String currentTypeId = module.getOptionValue(Module.ELEMENT_TYPE);
-    if (!moduleType.getId().equals(currentTypeId)) {
-      module.setOption(Module.ELEMENT_TYPE, moduleType.getId());
-    }
-
+    module.setOption(Module.ELEMENT_TYPE, moduleType.getId());
     ModifiableRootModel modifiableModel = modelsProvider.getModifiableRootModel(module);
     modules.put(module.getName(), modifiableModel);
     modifiableModel.clear();
@@ -118,19 +110,20 @@ public class ModuleEditorImpl implements BlazeSyncPlugin.ModuleEditor {
   public void commitWithGc(BlazeContext context) {
     List<Module> orphanModules = Lists.newArrayList();
     for (Module module : ModuleManager.getInstance(project).getModules()) {
-      if (!modules.containsKey(module.getName())) {
-        orphanModules.add(module);
+      if (!modules.containsKey(module.getName())
+              && !ExternalModuleProvider.EP_NAME.getExtensionList().stream().anyMatch(n -> n.isOwnedByExternalPlugin(module))) {
+          orphanModules.add(module);
       }
     }
     if (orphanModules.size() > 0) {
       context.output(
-          PrintOutput.log(String.format("Removing %d dead modules", orphanModules.size())));
+        PrintOutput.log(String.format(Locale.ROOT, "Removing %d dead modules", orphanModules.size())));
       for (Module module : orphanModules) {
         if (module.isDisposed()) {
           continue;
         }
         moduleModel.disposeModule(module);
-        File imlFile = new File(module.getModuleFilePath());
+        VirtualFile imlFile = module.getModuleFile();
         removeImlFile(imlFile);
       }
     }
@@ -153,9 +146,8 @@ public class ModuleEditorImpl implements BlazeSyncPlugin.ModuleEditor {
   // Otherwise, it is possible for IntelliJ to read the
   // old IML file from its index and behave unpredictably
   // (like failing to save the new IML files to disk).
-  private static void removeImlFile(final File imlFile) {
-    final VirtualFile imlVirtualFile = VfsUtil.findFileByIoFile(imlFile, true);
-    if (imlVirtualFile != null && imlVirtualFile.exists()) {
+  private static void removeImlFile(final VirtualFile imlVirtualFile) {
+    if (imlVirtualFile != null && imlVirtualFile.exists() && !imlVirtualFile.isDirectory()) {
       ApplicationManager.getApplication()
           .runWriteAction(
               new Runnable() {

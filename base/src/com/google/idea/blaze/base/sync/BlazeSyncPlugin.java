@@ -1,11 +1,11 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2024 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,7 +31,6 @@ import com.google.idea.blaze.base.sync.libraries.LibrarySource;
 import com.google.idea.blaze.base.sync.projectview.WorkspaceLanguageSettings;
 import com.google.idea.blaze.base.sync.workspace.ArtifactLocationDecoder;
 import com.google.idea.blaze.base.sync.workspace.WorkingSet;
-import com.google.idea.blaze.common.Context;
 import com.intellij.openapi.extensions.ExtensionPointName;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleType;
@@ -140,9 +139,6 @@ public interface BlazeSyncPlugin {
    */
   default void createSdks(Project project, BlazeProjectData blazeProjectData) {}
 
-  /** Updates the sdk for the project -- only used for the new query-sync */
-  default void updateProjectSdk(Project project, Context context, ProjectViewSet projectViewSet) {}
-
   /** Updates the sdk for the project. */
   default void updateProjectSdk(
       Project project,
@@ -167,15 +163,6 @@ public interface BlazeSyncPlugin {
       ModuleEditor moduleEditor,
       Module workspaceModule,
       ModifiableRootModel workspaceModifiableModel) {}
-
-  /** Modifies the IDE project structure -- only used for the new query-sync */
-  default void updateProjectStructure(
-      Project project,
-      Context context,
-      WorkspaceRoot workspaceRoot,
-      Module workspaceModule,
-      Set<String> androidResourceDirectories,
-      Set<String> androidSourcePackages) {}
 
   /**
    * Updates in-memory state that isn't serialized by IntelliJ.
@@ -213,6 +200,14 @@ public interface BlazeSyncPlugin {
 
   /** Returns any custom sections that this plugin supports. */
   default Collection<SectionParser> getSections() {
+    return ImmutableList.of();
+  }
+
+  /**
+   * Returns a list of Bazel/Blaze rule names that are able to generate code for the
+   * language specified.
+   */
+  default Collection<String> getCodeGeneratorRuleNames(ProjectViewSet viewSet, LanguageClass languageClass) {
     return ImmutableList.of();
   }
 

@@ -48,18 +48,9 @@ public class BazelPyImportResolverStrategy extends AbstractPyImportResolverStrat
   @Nullable
   @Override
   protected QualifiedName toImportString(ArtifactLocation source) {
-    if (source.isGenerated() || !source.getRelativePath().endsWith(".py")) {
+    if (source.isGenerated() || !source.relativePath().endsWith(".py")) {
       return null;
     }
-    QualifiedName name = fromRelativePath(source.getRelativePath());
-    // pip_parse and pip_install macros unzip pip wheels into site-packages dir
-    // as result import strings get site-packages prefix, remove the prefix.
-    // Reference to python rules where site-packages is added:
-    //   https://github.com/bazelbuild/rules_python/blob/834149dfcd9e0dcb9d713caeb6bf5b0584601392/python/pip_install/extract_wheels/wheel.py#L75
-    if (name != null
-        && name.toString().startsWith("site-packages.")) {
-      name = name.removeHead(1);
-    }
-    return name;
+    return fromRelativePath(source.relativePath());
   }
 }

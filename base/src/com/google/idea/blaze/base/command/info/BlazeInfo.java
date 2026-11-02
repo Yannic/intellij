@@ -33,8 +33,10 @@ public abstract class BlazeInfo implements ProtoWrapper<ProjectData.BlazeInfo> {
   public static final String BUILD_LANGUAGE = "build-language";
   public static final String OUTPUT_BASE_KEY = "output_base";
   public static final String OUTPUT_PATH_KEY = "output_path";
-  public static final String MASTER_LOG = "master-log";
   public static final String RELEASE = "release";
+  public static final String JAVA_HOME = "java-home";
+
+  public static final String STARLARK_SEMANTICS = "starlark-semantics";
 
   public static String blazeBinKey(BuildSystemName buildSystemName) {
     switch (buildSystemName) {
@@ -56,16 +58,6 @@ public abstract class BlazeInfo implements ProtoWrapper<ProjectData.BlazeInfo> {
     throw new IllegalArgumentException("Unrecognized build system: " + buildSystemName);
   }
 
-  public static String blazeTestlogsKey(BuildSystemName buildSystemName) {
-    switch (buildSystemName) {
-      case Blaze:
-        return "blaze-testlogs";
-      case Bazel:
-        return "bazel-testlogs";
-    }
-    throw new IllegalArgumentException("Unrecognized build system: " + buildSystemName);
-  }
-
   public static Builder builder() {
     return new AutoValue_BlazeInfo.Builder();
   }
@@ -79,17 +71,17 @@ public abstract class BlazeInfo implements ProtoWrapper<ProjectData.BlazeInfo> {
     ExecutionRootPath blazeGenfiles =
         ExecutionRootPath.createAncestorRelativePath(
             executionRoot, new File(getOrThrow(blazeInfoMap, blazeGenfilesKey(buildSystemName))));
-    ExecutionRootPath blazeTestlogs =
-        ExecutionRootPath.createAncestorRelativePath(
-            executionRoot, new File(getOrThrow(blazeInfoMap, blazeTestlogsKey(buildSystemName))));
     File outputBase = new File(getOrThrow(blazeInfoMap, OUTPUT_BASE_KEY).trim());
+    File outputPath = new File(getOrThrow(blazeInfoMap, OUTPUT_PATH_KEY).trim());
+    File javaHome = new File(getOrThrow(blazeInfoMap, JAVA_HOME).trim());
     return AutoValue_BlazeInfo.builder()
         .setBlazeInfoMap(blazeInfoMap)
         .setExecutionRoot(executionRoot)
         .setBlazeBin(blazeBin)
         .setBlazeGenfiles(blazeGenfiles)
-        .setBlazeTestlogs(blazeTestlogs)
         .setOutputBase(outputBase)
+        .setOutputPath(outputPath)
+        .setJavaHome(javaHome)
         .autoBuild();
   }
 
@@ -118,25 +110,39 @@ public abstract class BlazeInfo implements ProtoWrapper<ProjectData.BlazeInfo> {
 
   public abstract File getExecutionRoot();
 
+  // should not be used, might be wrong if sync/build flags deviate
+  @Deprecated
   public abstract ExecutionRootPath getBlazeBin();
 
+  // should not be used, might be wrong if sync/build flags deviate
+  @Deprecated
   public File getBlazeBinDirectory() {
     return getBlazeBin().getFileRootedAt(getExecutionRoot());
   }
 
+  // should not be used, might be wrong if sync/build flags deviate
+  @Deprecated
   public abstract ExecutionRootPath getBlazeGenfiles();
 
+  // should not be used, might be wrong if sync/build flags deviate
+  @Deprecated
   public File getGenfilesDirectory() {
     return getBlazeGenfiles().getFileRootedAt(getExecutionRoot());
   }
 
-  public abstract ExecutionRootPath getBlazeTestlogs();
+  public abstract File getOutputBase();
 
-  public File getBlazeTestlogsDirectory() {
-    return getBlazeTestlogs().getFileRootedAt(getExecutionRoot());
+  public abstract File getOutputPath();
+
+  public String getStarlarkSemantics() {
+    return getBlazeInfoMap().get(STARLARK_SEMANTICS);
   }
 
-  public abstract File getOutputBase();
+  public String getRelease() {
+    return getBlazeInfoMap().get(RELEASE);
+  }
+
+  public abstract File getJavaHome();
 
   /** Creates a mock blaze info with the minimum information required for syncing. */
   @VisibleForTesting
@@ -144,16 +150,16 @@ public abstract class BlazeInfo implements ProtoWrapper<ProjectData.BlazeInfo> {
       String outputBase,
       String executionRoot,
       String blazeBin,
-      String blazeGenFiles,
-      String blazeTestlogs) {
+      String blazeGenFiles) {
     BuildSystemName buildSystemName = BuildSystemName.Bazel;
     ImmutableMap.Builder<String, String> blazeInfoMap =
         ImmutableMap.<String, String>builder()
             .put(OUTPUT_BASE_KEY, outputBase)
+            .put(OUTPUT_PATH_KEY, outputBase + "/output")
             .put(EXECUTION_ROOT_KEY, executionRoot)
             .put(blazeBinKey(buildSystemName), blazeBin)
             .put(blazeGenfilesKey(buildSystemName), blazeGenFiles)
-            .put(blazeTestlogsKey(buildSystemName), blazeTestlogs);
+            .put(JAVA_HOME, "/tmp/java");
     return BlazeInfo.create(buildSystemName, blazeInfoMap.build());
   }
 
@@ -167,9 +173,11 @@ public abstract class BlazeInfo implements ProtoWrapper<ProjectData.BlazeInfo> {
 
     public abstract Builder setBlazeGenfiles(ExecutionRootPath value);
 
-    public abstract Builder setBlazeTestlogs(ExecutionRootPath value);
-
     public abstract Builder setOutputBase(File value);
+
+    public abstract Builder setOutputPath(File value);
+
+    public abstract Builder setJavaHome(File value);
 
     public abstract BlazeInfo autoBuild();
 
@@ -177,7 +185,9 @@ public abstract class BlazeInfo implements ProtoWrapper<ProjectData.BlazeInfo> {
     public BlazeInfo build(BuildSystemName buildSystemName) {
       BlazeInfo blazeInfo = autoBuild();
       blazeInfoMapBuilder().put(OUTPUT_BASE_KEY, blazeInfo.getOutputBase().getPath());
+      blazeInfoMapBuilder().put(OUTPUT_PATH_KEY, blazeInfo.getOutputPath().getPath());
       blazeInfoMapBuilder().put(EXECUTION_ROOT_KEY, blazeInfo.getExecutionRoot().getPath());
+      blazeInfoMapBuilder().put(JAVA_HOME, blazeInfo.getJavaHome().getPath());
       File execRoot = new File(blazeInfo.getExecutionRoot().getAbsolutePath());
       blazeInfoMapBuilder()
           .put(
@@ -187,10 +197,6 @@ public abstract class BlazeInfo implements ProtoWrapper<ProjectData.BlazeInfo> {
           .put(
               blazeGenfilesKey(buildSystemName),
               blazeInfo.getBlazeGenfiles().getFileRootedAt(execRoot).getAbsolutePath());
-      blazeInfoMapBuilder()
-          .put(
-              blazeTestlogsKey(buildSystemName),
-              blazeInfo.getBlazeTestlogs().getFileRootedAt(execRoot).getAbsolutePath());
       return autoBuild();
     }
 

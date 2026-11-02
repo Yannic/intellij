@@ -25,7 +25,6 @@ import com.google.devtools.intellij.IntellijAspectTestFixtureOuterClass.OutputGr
 import com.google.devtools.intellij.aspect.Common.ArtifactLocation;
 import com.google.devtools.intellij.ideinfo.IntellijIdeInfo.Dependency;
 import com.google.devtools.intellij.ideinfo.IntellijIdeInfo.Dependency.DependencyType;
-import com.google.devtools.intellij.ideinfo.IntellijIdeInfo.LibraryArtifact;
 import com.google.devtools.intellij.ideinfo.IntellijIdeInfo.TargetIdeInfo;
 import com.google.devtools.intellij.ideinfo.IntellijIdeInfo.TargetKey;
 import java.io.File;
@@ -36,6 +35,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Stream;
 
 /** Abstract base class for Intellij aspect tests. */
 public abstract class IntellijAspectTest {
@@ -69,16 +69,28 @@ public abstract class IntellijAspectTest {
         .collect(toImmutableList());
   }
 
-  protected TargetIdeInfo findTarget(
-      IntellijAspectTestFixture testFixture, String maybeRelativeLabel) {
-    String label =
-        isAbsoluteTarget(maybeRelativeLabel)
-            ? maybeRelativeLabel
-            : testRelative(maybeRelativeLabel);
+  protected TargetIdeInfo findTarget(IntellijAspectTestFixture testFixture, String maybeRelativeLabel) {
+    return findTargets(testFixture, maybeRelativeLabel)
+        .findAny()
+        .orElse(null);
+  }
+
+  protected Stream<TargetIdeInfo> findTargets(IntellijAspectTestFixture testFixture, String maybeRelativeLabel) {
+    final var label = isAbsoluteTarget(maybeRelativeLabel)
+        ? maybeRelativeLabel
+        : testRelative(maybeRelativeLabel);
+
     return testFixture
         .getTargetsList()
         .stream()
-        .filter(target -> matchTarget(target, label))
+        .filter(target -> matchTarget(target, label));
+  }
+
+  protected TargetIdeInfo findExternalTarget(IntellijAspectTestFixture testFixture, String repo, String label) {
+    return testFixture
+        .getTargetsList()
+        .stream()
+        .filter(target -> matchTarget(target, repo, label))
         .findAny()
         .orElse(null);
   }
@@ -128,8 +140,15 @@ public abstract class IntellijAspectTest {
     return targetKey.getLabel().equals(label) && targetKey.getAspectIdsList().isEmpty();
   }
 
-  private static boolean matchTarget(
-      TargetIdeInfo target, String label, String... fractionalAspectIds) {
+  private static boolean matchTarget(TargetIdeInfo target, String repo, String label) {
+    if (!target.hasKey() || target.getKey().getAspectIdsCount() != 0) {
+      return false;
+    }
+
+    return target.getKey().getLabel().endsWith(repo + label);
+  }
+
+  private static boolean matchTarget(TargetIdeInfo target, String label, String... fractionalAspectIds) {
     if (!target.hasKey()) {
       return false;
     }
@@ -141,8 +160,7 @@ public abstract class IntellijAspectTest {
     return targetHasMatchingAspects(target, fractionalAspectIds);
   }
 
-  protected static boolean targetHasMatchingAspects(
-      TargetIdeInfo target, String... fractionalAspectIds) {
+  protected static boolean targetHasMatchingAspects(TargetIdeInfo target, String... fractionalAspectIds) {
     if (!target.hasKey()) {
       return false;
     }
@@ -200,42 +218,6 @@ public abstract class IntellijAspectTest {
         .setDependencyType(DependencyType.COMPILE_TIME)
         .setTarget(targetIdeInfo.getKey())
         .build();
-  }
-
-  protected static String libraryArtifactToString(LibraryArtifact libraryArtifact) {
-    StringBuilder stringBuilder = new StringBuilder();
-    if (libraryArtifact.hasJar()) {
-      stringBuilder.append("<jar:");
-      stringBuilder.append(libraryArtifact.getJar().getRelativePath());
-      stringBuilder.append(">");
-    }
-    if (libraryArtifact.hasInterfaceJar()) {
-      stringBuilder.append("<ijar:");
-      stringBuilder.append(libraryArtifact.getInterfaceJar().getRelativePath());
-      stringBuilder.append(">");
-    }
-    if (libraryArtifact.hasSourceJar()) {
-      stringBuilder.append("<source:");
-      stringBuilder.append(libraryArtifact.getSourceJar().getRelativePath());
-      stringBuilder.append(">");
-    }
-
-    return stringBuilder.toString();
-  }
-
-  /** Constructs a string that matches OutputJar#toString for comparison testing. */
-  protected static String jarString(String jar, String iJar, String sourceJar) {
-    StringBuilder sb = new StringBuilder();
-    if (jar != null) {
-      sb.append("<jar:" + jar + ">");
-    }
-    if (iJar != null) {
-      sb.append("<ijar:" + iJar + ">");
-    }
-    if (sourceJar != null) {
-      sb.append("<source:" + sourceJar + ">");
-    }
-    return sb.toString();
   }
 
   protected static Iterable<String> relativePathsForArtifacts(List<ArtifactLocation> sourcesList) {

@@ -28,8 +28,10 @@ public class Sections {
       Lists.newArrayList(
           TextBlockSection.PARSER,
           ImportSection.PARSER,
+          TryImportSection.PARSER,
           DirectorySection.PARSER,
           AutomaticallyDeriveTargetsSection.PARSER,
+          SyncManualTargetsSection.PARSER,
           TargetSection.PARSER,
           WorkspaceTypeSection.PARSER,
           AdditionalLanguagesSection.PARSER,
@@ -43,7 +45,11 @@ public class Sections {
           RunConfigurationsSection.PARSER,
           ShardBlazeBuildsSection.PARSER,
           TargetShardSizeSection.PARSER,
-          BazelBinarySection.PARSER);
+          BazelBinarySection.PARSER,
+          BuildConfigSection.PARSER,
+          UseExclusionPatternsSection.PARSER,
+          UseQuerySyncSection.PARSER,
+          ViewProjectRootSection.PARSER);
 
   public static List<SectionParser> getParsers() {
     List<SectionParser> parsers = Lists.newArrayList(PARSERS);

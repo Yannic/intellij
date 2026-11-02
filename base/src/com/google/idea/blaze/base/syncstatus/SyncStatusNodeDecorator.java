@@ -16,10 +16,11 @@
 package com.google.idea.blaze.base.syncstatus;
 
 import com.google.idea.blaze.base.model.BlazeProjectData;
-import com.google.idea.blaze.base.qsync.QuerySync;
+import com.google.idea.blaze.base.settings.Blaze;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.sync.autosync.ProjectTargetManager.SyncStatus;
 import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
-import com.google.idea.blaze.base.syncstatus.SyncStatusContributor.PsiFileAndName;
+import com.google.idea.blaze.base.syncstatus.LegacySyncStatusContributor.PsiFileAndName;
 import com.intellij.ide.projectView.PresentationData;
 import com.intellij.ide.projectView.ProjectViewNode;
 import com.intellij.ide.projectView.ProjectViewNodeDecorator;
@@ -37,11 +38,8 @@ public class SyncStatusNodeDecorator implements ProjectViewNodeDecorator {
   @Override
   @SuppressWarnings("rawtypes")
   public void decorate(ProjectViewNode node, PresentationData data) {
-    if (QuerySync.isEnabled()) {
-      return;
-    }
     Project project = node.getProject();
-    if (project == null) {
+    if (project == null || Blaze.getProjectType(project) != ProjectType.ASPECT_SYNC) {
       return;
     }
     BlazeProjectData projectData =
@@ -55,7 +53,7 @@ public class SyncStatusNodeDecorator implements ProjectViewNodeDecorator {
     }
     VirtualFile vf = fileAndName.psiFile.getVirtualFile();
     SyncStatus status =
-        vf == null ? null : SyncStatusContributor.getSyncStatus(project, projectData, vf);
+        vf == null ? null : LegacySyncStatusContributor.getSyncStatus(project, projectData, vf);
     if (status == SyncStatus.UNSYNCED) {
       data.clearText();
       data.addText(fileAndName.name, SimpleTextAttributes.GRAY_ATTRIBUTES);
@@ -71,7 +69,7 @@ public class SyncStatusNodeDecorator implements ProjectViewNodeDecorator {
 
   @Nullable
   private static PsiFileAndName toPsiFile(BlazeProjectData projectData, ProjectViewNode<?> node) {
-    return Arrays.stream(SyncStatusContributor.EP_NAME.getExtensions())
+    return Arrays.stream(LegacySyncStatusContributor.EP_NAME.getExtensions())
         .map(c -> c.toPsiFileAndName(projectData, node))
         .filter(Objects::nonNull)
         .findFirst()

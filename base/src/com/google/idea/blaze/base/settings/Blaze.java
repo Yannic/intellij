@@ -16,36 +16,83 @@
 package com.google.idea.blaze.base.settings;
 
 import com.google.idea.blaze.base.bazel.BuildSystemProvider;
+import com.google.idea.blaze.base.model.BlazeProjectData;
+import com.google.idea.blaze.base.projectview.ProjectViewManager;
+import com.google.idea.blaze.base.projectview.ProjectViewSet;
+import com.google.idea.blaze.base.projectview.section.sections.UseQuerySyncSection;
+import com.google.idea.blaze.base.scope.Scope;
+import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.intellij.ide.DataManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectManager;
+
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.swing.SwingUtilities;
+import java.util.Optional;
 
 /** Blaze project utilities. */
 public class Blaze {
 
   private Blaze() {}
 
-  public static boolean isBlazeProjectOpen() {
-    for (Project project : ProjectManager.getInstance().getOpenProjects()) {
-      if (isBlazeProject(project)) {
-        return true;
-      }
-    }
-    return false;
+  /**
+   * Returns whether this project was imported from blaze.
+   */
+  public static boolean isBlazeProject(@Nullable Project project) {
+    return project != null && BlazeImportSettingsManager.getInstance(project).getImportSettings() != null;
   }
 
-  /** Returns whether this project was imported from blaze. */
-  public static boolean isBlazeProject(@Nullable Project project) {
-    return project != null
-        && BlazeImportSettingsManager.getInstance(project).getImportSettings() != null;
+  public static BlazeProjectData getProjectData(@Nullable Project project) {
+    if (!isBlazeProject(project)) {
+      return null;
+    }
+
+    return BlazeProjectDataManager.getInstance(project).getBlazeProjectData();
+  }
+
+  /**
+   * Query sync is no longer supported, CLion only uses aspect sync. This
+   * function always returns ASPECT_SYNC or UNKNOWN to not break legacy code
+   * that relies on this to determine if the project is imported.
+   */
+  @Deprecated
+  public static ProjectType getProjectType(@Nullable Project project) {
+    if (project == null) {
+      return ProjectType.UNKNOWN;
+    }
+
+    final var blazeImportSettingsManager = BlazeImportSettingsManager.getInstance(project);
+    if (blazeImportSettingsManager == null) {
+      return ProjectType.UNKNOWN;
+    }
+    final var blazeImportSettings = blazeImportSettingsManager.getImportSettings();
+    if (blazeImportSettings == null) {
+      return ProjectType.UNKNOWN;
+    }
+
+    return ProjectType.ASPECT_SYNC;
+  }
+
+  /**
+   * Query sync is no longer supported, CLion only uses aspect sync. This
+   * function always returns ASPECT_SYNC or UNKNOWN to not break legacy code
+   * that relies on this to determine if the project is imported.
+   */
+  @Deprecated
+  public static ProjectType getUpToDateProjectTypeBeforeSync(@Nonnull Project project) {
+    return getProjectType(project);
   }
 
   /**
    * Returns the build system associated with this project, or falls back to the default blaze build
    * system if the project is null or not a blaze project.
+   *
+   * @deprecated Since we do not support Blaze anymore, this check is redundant and can be removed in
+   * the future.
    */
+  @Deprecated
   public static BuildSystemName getBuildSystemName(@Nullable Project project) {
     BlazeImportSettings importSettings =
         project == null

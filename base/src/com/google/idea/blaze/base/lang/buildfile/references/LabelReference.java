@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2026 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,12 +17,8 @@ package com.google.idea.blaze.base.lang.buildfile.references;
 
 import com.google.idea.blaze.base.lang.buildfile.completion.BuildLookupElement;
 import com.google.idea.blaze.base.lang.buildfile.completion.LabelRuleLookupElement;
-import com.google.idea.blaze.base.lang.buildfile.psi.Argument;
-import com.google.idea.blaze.base.lang.buildfile.psi.BuildFile;
+import com.google.idea.blaze.base.lang.buildfile.psi.*;
 import com.google.idea.blaze.base.lang.buildfile.psi.BuildFile.BlazeFileType;
-import com.google.idea.blaze.base.lang.buildfile.psi.FuncallExpression;
-import com.google.idea.blaze.base.lang.buildfile.psi.LoadStatement;
-import com.google.idea.blaze.base.lang.buildfile.psi.StringLiteral;
 import com.google.idea.blaze.base.lang.buildfile.psi.util.PsiUtils;
 import com.google.idea.blaze.base.lang.buildfile.search.BlazePackage;
 import com.google.idea.blaze.base.lang.buildfile.search.ResolveUtil;
@@ -35,7 +31,9 @@ import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiReferenceBase;
 import com.intellij.util.ArrayUtil;
 import com.intellij.util.IncorrectOperationException;
+
 import javax.annotation.Nullable;
+import org.jetbrains.annotations.NotNull;
 
 /** Converts a blaze label into an absolute path, then resolves that path to a PsiElements */
 public class LabelReference extends PsiReferenceBase<StringLiteral> {
@@ -74,7 +72,7 @@ public class LabelReference extends PsiReferenceBase<StringLiteral> {
    * Hack: don't include 'name' keyword arguments -- they'll be a reference to the enclosing
    * function call / rule, and show up as unnecessary references to that rule.
    */
-  private static boolean validLabelLocation(StringLiteral element) {
+  protected static boolean validLabelLocation(StringLiteral element) {
     PsiElement parent = element.getParent();
     if (parent instanceof Argument.Keyword) {
       String argName = ((Argument.Keyword) parent).getName();
@@ -97,15 +95,21 @@ public class LabelReference extends PsiReferenceBase<StringLiteral> {
   private BuildLookupElement[] getRuleLookups(String labelString) {
     if (labelString.endsWith("/")
         || (labelString.startsWith("/") && !labelString.contains(":"))
+        || (labelString.startsWith("@") && !labelString.contains(":"))
         || skylarkExtensionReference(myElement)) {
       return BuildLookupElement.EMPTY_ARRAY;
     }
+
     String packagePrefix = LabelUtils.getPackagePathComponent(labelString);
+    String externalWorkspace = LabelUtils.getExternalWorkspaceComponent(labelString);
+
     BuildFile referencedBuildFile =
-        LabelUtils.getReferencedBuildFile(myElement.getContainingFile(), packagePrefix);
+        LabelUtils.getReferencedBuildFile(
+            myElement.getContainingFile(), externalWorkspace, packagePrefix);
     if (referencedBuildFile == null) {
       return BuildLookupElement.EMPTY_ARRAY;
     }
+
     String self = null;
     if (referencedBuildFile == myElement.getContainingFile()) {
       FuncallExpression funcall =
@@ -115,11 +119,11 @@ public class LabelReference extends PsiReferenceBase<StringLiteral> {
       }
     }
     return LabelRuleLookupElement.collectAllRules(
-        referencedBuildFile, labelString, packagePrefix, self, myElement.getQuoteType());
+        referencedBuildFile, labelString, self, myElement.getQuoteType());
   }
 
-  private BuildLookupElement[] getFileLookups(String labelString) {
-    if (labelString.startsWith("//") || labelString.equals("/")) {
+  protected BuildLookupElement[] getFileLookups(String labelString) {
+    if (labelString.startsWith("//") || labelString.equals("/") || labelString.startsWith("@")) {
       return getNonLocalFileLookups(labelString);
     }
     return getPackageLocalFileLookups(labelString);
@@ -149,7 +153,9 @@ public class LabelReference extends PsiReferenceBase<StringLiteral> {
     if (!skylarkExtensionReference(myElement)) {
       return BuildLookupElement.EMPTY_ARRAY;
     }
+
     String packagePrefix = LabelUtils.getPackagePathComponent(labelString);
+    String externalWorkspace = LabelUtils.getExternalWorkspaceComponent(labelString);
     BuildFile parentFile = myElement.getContainingFile();
     if (parentFile == null) {
       return BuildLookupElement.EMPTY_ARRAY;
@@ -159,24 +165,30 @@ public class LabelReference extends PsiReferenceBase<StringLiteral> {
       return BuildLookupElement.EMPTY_ARRAY;
     }
     BuildFile referencedBuildFile =
-        LabelUtils.getReferencedBuildFile(containingPackage.buildFile, packagePrefix);
+        LabelUtils.getReferencedBuildFile(
+            containingPackage.buildFile, externalWorkspace, packagePrefix);
 
     // Directories before the colon are already covered.
     // We're only concerned with package-local directories.
     boolean hasColon = labelString.indexOf(':') != -1;
-    VirtualFileFilter filter =
-        file ->
-            ("bzl".equals(file.getExtension()) && !file.getPath().equals(parentFile.getFilePath()))
-                || (hasColon && file.isDirectory());
+    VirtualFileFilter filter = getAllowedFilesFilter(parentFile, hasColon);
     FileLookupData lookupData =
         FileLookupData.packageLocalFileLookup(labelString, myElement, referencedBuildFile, filter);
 
     return lookupData != null
-        ? getReferenceManager().resolvePackageLookupElements(lookupData)
-        : BuildLookupElement.EMPTY_ARRAY;
+            ? getReferenceManager().resolvePackageLookupElements(lookupData)
+            : BuildLookupElement.EMPTY_ARRAY;
   }
 
-  private BuildReferenceManager getReferenceManager() {
+  protected @NotNull VirtualFileFilter getAllowedFilesFilter(BuildFile parentFile, boolean hasColon) {
+    VirtualFileFilter filter =
+        file ->
+            ("bzl".equals(file.getExtension()) && !file.getPath().equals(parentFile.getFilePath()))
+                || (hasColon && file.isDirectory());
+    return filter;
+  }
+
+  protected BuildReferenceManager getReferenceManager() {
     return BuildReferenceManager.getInstance(myElement.getProject());
   }
 
@@ -235,7 +247,7 @@ public class LabelReference extends PsiReferenceBase<StringLiteral> {
   }
 
   @Nullable
-  private Label getLabel(String labelString) {
+  protected Label getLabel(String labelString) {
     if (labelString.indexOf('*') != -1) {
       // don't even try to handle globs, yet.
       return null;
@@ -244,12 +256,12 @@ public class LabelReference extends PsiReferenceBase<StringLiteral> {
     return LabelUtils.createLabelFromString(blazePackage, labelString);
   }
 
-  private static boolean skylarkExtensionReference(StringLiteral element) {
+  protected boolean skylarkExtensionReference(StringLiteral element) {
     PsiElement parent = element.getParent();
-    if (!(parent instanceof LoadStatement)) {
+    if (!(parent instanceof LoadStatement loadStatement)) {
       return false;
     }
-    return ((LoadStatement) parent).getImportPsiElement() == element;
+    return loadStatement.getImportPsiElement() == element;
   }
 
   private static boolean insideSkylarkExtension(StringLiteral element) {

@@ -15,8 +15,8 @@
  */
 package com.google.idea.blaze.base.sync.workspace;
 
-import com.google.idea.blaze.base.command.buildresult.BlazeArtifact;
 import com.google.idea.blaze.base.ideinfo.ArtifactLocation;
+import com.google.idea.blaze.common.artifact.BlazeArtifact;
 import java.io.File;
 import java.util.Collection;
 import java.util.List;
@@ -40,15 +40,4 @@ public interface ArtifactLocationDecoder {
 
   /** Returns a {@link BlazeArtifact} corresponding to the given {@link ArtifactLocation}. */
   BlazeArtifact resolveOutput(ArtifactLocation artifact);
-
-  default List<BlazeArtifact> resolveOutputs(Collection<ArtifactLocation> artifactLocations) {
-    return artifactLocations.stream()
-        .map(this::resolveOutput)
-        .filter(Objects::nonNull)
-        .collect(Collectors.toList());
-  }
-
-  default List<File> decodeAll(Collection<ArtifactLocation> artifactLocations) {
-    return artifactLocations.stream().map(this::decode).collect(Collectors.toList());
-  }
 }

@@ -32,6 +32,9 @@ import com.google.idea.blaze.base.model.primitives.Label;
 import com.google.idea.blaze.base.model.primitives.RuleType;
 import com.google.idea.blaze.base.run.SourceToTargetFinder;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
+import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
+import com.google.idea.blaze.base.settings.BuildSystemName;
 import com.google.idea.blaze.base.sync.SyncCache;
 import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
 import com.google.idea.common.experiments.ExperimentService;
@@ -42,6 +45,7 @@ import java.util.Collection;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
+import kotlinx.coroutines.GlobalScope;
 import org.jetbrains.annotations.NotNull;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -58,9 +62,15 @@ public class TestMapTest extends BlazeTestCase {
       @NotNull Container applicationServices, @NotNull Container projectServices) {
     super.initTest(applicationServices, projectServices);
     applicationServices.register(ExperimentService.class, new MockExperimentService());
+
     mockBlazeProjectDataManager = new MockBlazeProjectDataManager();
     projectServices.register(BlazeProjectDataManager.class, mockBlazeProjectDataManager);
-    projectServices.register(SyncCache.class, new SyncCache(project));
+    projectServices.register(SyncCache.class, new SyncCache(project, GlobalScope.INSTANCE));
+    BlazeImportSettingsManager importSettingsManager = new BlazeImportSettingsManager(project);
+    BlazeImportSettings settings =
+        new BlazeImportSettings("", "", "", "", BuildSystemName.Blaze, ProjectType.ASPECT_SYNC);
+    importSettingsManager.setImportSettings(settings);
+    projectServices.register(BlazeImportSettingsManager.class, importSettingsManager);
 
     ExtensionPointImpl<SourceToTargetFinder> ep =
         registerExtensionPoint(SourceToTargetFinder.EP_NAME, SourceToTargetFinder.class);

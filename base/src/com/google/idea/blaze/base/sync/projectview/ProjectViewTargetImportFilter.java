@@ -19,6 +19,7 @@ import com.google.common.collect.Sets;
 import com.google.idea.blaze.base.ideinfo.Tags;
 import com.google.idea.blaze.base.ideinfo.TargetIdeInfo;
 import com.google.idea.blaze.base.model.primitives.Label;
+import com.google.idea.blaze.base.model.primitives.WorkspacePath;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
 import com.google.idea.blaze.base.projectview.section.sections.ExcludeTargetSection;
@@ -42,17 +43,21 @@ public class ProjectViewTargetImportFilter {
   }
 
   public boolean isSourceTarget(TargetIdeInfo target) {
-    return importRoots.importAsSource(target.getKey().getLabel()) && !importTargetOutput(target);
+    return importRoots.importAsSource(target.getKey().label()) && !importTargetOutput(target);
+  }
+
+  public boolean containsWorkspacePath(WorkspacePath workspacePath) {
+    return importRoots.containsWorkspacePath(workspacePath);
   }
 
   private boolean importTargetOutput(TargetIdeInfo target) {
     return target.getTags().contains(Tags.TARGET_TAG_IMPORT_TARGET_OUTPUT)
         || target.getTags().contains(Tags.TARGET_TAG_IMPORT_AS_LIBRARY_LEGACY)
-        || importTargetOutputs.contains(target.getKey().getLabel());
+        || importTargetOutputs.contains(target.getKey().label());
   }
 
   public boolean excludeTarget(TargetIdeInfo target) {
-    return excludedTargets.contains(target.getKey().getLabel())
+    return excludedTargets.contains(target.getKey().label())
         || target.getTags().contains(Tags.TARGET_TAG_PROVIDED_BY_SDK)
         || target.getTags().contains(Tags.TARGET_TAG_EXCLUDE_TARGET);
   }

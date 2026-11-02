@@ -22,31 +22,27 @@ import com.google.common.collect.ImmutableSet;
 import com.google.idea.blaze.base.BlazeTestCase;
 import com.google.idea.blaze.base.command.BlazeCommand;
 import com.google.idea.blaze.base.command.BlazeCommandName;
+import com.google.idea.blaze.base.model.primitives.Label;
 import com.google.idea.blaze.base.model.primitives.LanguageClass;
+import com.google.idea.blaze.base.sync.aspects.storage.AspectWriter;
 import com.google.idea.blaze.base.sync.aspects.strategy.AspectStrategy.OutputGroup;
-import com.google.idea.common.experiments.ExperimentService;
-import com.google.idea.common.experiments.MockExperimentService;
+import com.intellij.openapi.project.Project;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+
 /** Unit tests for {@link AspectStrategy}. */
 @RunWith(JUnit4.class)
 public class AspectStrategyTest extends BlazeTestCase {
 
   private static final MockAspectStrategy strategy = new MockAspectStrategy();
-  private MockExperimentService experiments;
-
-  @Override
-  protected void initTest(Container applicationServices, Container projectServices) {
-    experiments = new MockExperimentService();
-    applicationServices.register(ExperimentService.class, experiments);
-    registerExtensionPoint(OutputGroupsProvider.EP_NAME, OutputGroupsProvider.class);
-  }
 
   @Test
   public void testGenericOutputGroupAlwaysPresent() {
@@ -54,7 +50,7 @@ public class AspectStrategyTest extends BlazeTestCase {
 
     BlazeCommand.Builder builder = emptyBuilder();
     strategy.addAspectAndOutputGroups(
-        builder, ImmutableList.of(OutputGroup.INFO), activeLanguages, /* directDepsOnly= */ false);
+        project, builder, ImmutableList.of(OutputGroup.INFO), activeLanguages);
     assertThat(getOutputGroups(builder)).containsExactly("intellij-info-generic");
   }
 
@@ -64,18 +60,18 @@ public class AspectStrategyTest extends BlazeTestCase {
 
     BlazeCommand.Builder builder = emptyBuilder();
     strategy.addAspectAndOutputGroups(
+        project,
         builder,
         ImmutableList.of(OutputGroup.RESOLVE),
-        activeLanguages,
-        /* directDepsOnly= */ false);
+        activeLanguages);
     assertThat(getOutputGroups(builder)).containsExactly("intellij-resolve-java");
 
     builder = emptyBuilder();
     strategy.addAspectAndOutputGroups(
+        project,
         builder,
         ImmutableList.of(OutputGroup.COMPILE),
-        activeLanguages,
-        /* directDepsOnly= */ false);
+        activeLanguages);
     assertThat(getOutputGroups(builder)).containsExactly("intellij-compile-java");
   }
 
@@ -88,7 +84,7 @@ public class AspectStrategyTest extends BlazeTestCase {
 
     BlazeCommand.Builder builder = emptyBuilder();
     strategy.addAspectAndOutputGroups(
-        builder, ImmutableList.of(OutputGroup.INFO), activeLanguages, /* directDepsOnly= */ false);
+        project, builder, ImmutableList.of(OutputGroup.INFO), activeLanguages);
     assertThat(getOutputGroups(builder))
         .containsExactly(
             "intellij-info-generic",
@@ -104,10 +100,10 @@ public class AspectStrategyTest extends BlazeTestCase {
 
     builder = emptyBuilder();
     strategy.addAspectAndOutputGroups(
+        project,
         builder,
         ImmutableList.of(OutputGroup.RESOLVE),
-        activeLanguages,
-        /* directDepsOnly= */ false);
+        activeLanguages);
     assertThat(getOutputGroups(builder))
         .containsExactly(
             "intellij-resolve-java",
@@ -122,10 +118,10 @@ public class AspectStrategyTest extends BlazeTestCase {
 
     builder = emptyBuilder();
     strategy.addAspectAndOutputGroups(
+        project,
         builder,
         ImmutableList.of(OutputGroup.COMPILE),
-        activeLanguages,
-        /* directDepsOnly= */ false);
+        activeLanguages);
     assertThat(getOutputGroups(builder))
         .containsExactly(
             "intellij-compile-java",
@@ -139,53 +135,7 @@ public class AspectStrategyTest extends BlazeTestCase {
             "intellij-compile-dart");
   }
 
-  @Test
-  public void testDirectDepsOutputGroupsEnabledForJava() {
-    BlazeCommand.Builder builder = emptyBuilder();
-
-    strategy.addAspectAndOutputGroups(
-        builder,
-        ImmutableList.of(OutputGroup.INFO, OutputGroup.RESOLVE),
-        ImmutableSet.of(LanguageClass.JAVA),
-        /* directDepsOnly= */ true);
-
-    assertThat(getOutputGroups(builder))
-        .containsExactly(
-            "intellij-info-generic",
-            "intellij-info-java-direct-deps",
-            "intellij-resolve-java-direct-deps");
-  }
-
-  @Test
-  public void testDirectDepsOutputGroupsDisabledForCpp() {
-    BlazeCommand.Builder builder = emptyBuilder();
-
-    strategy.addAspectAndOutputGroups(
-        builder,
-        ImmutableList.of(OutputGroup.INFO, OutputGroup.RESOLVE),
-        ImmutableSet.of(LanguageClass.C),
-        /* directDepsOnly= */ true);
-
-    assertThat(getOutputGroups(builder))
-        .containsExactly("intellij-info-generic", "intellij-info-cpp", "intellij-resolve-cpp");
-  }
-
-  @Test
-  public void testDirectDepsExperimentRespected() {
-    experiments.setExperimentRaw("sync.allow.requesting.direct.deps", false);
-    BlazeCommand.Builder builder = emptyBuilder();
-
-    strategy.addAspectAndOutputGroups(
-        builder,
-        ImmutableList.of(OutputGroup.INFO, OutputGroup.RESOLVE),
-        ImmutableSet.of(LanguageClass.JAVA),
-        /* directDepsOnly= */ true);
-
-    assertThat(getOutputGroups(builder))
-        .containsExactly("intellij-info-generic", "intellij-info-java", "intellij-resolve-java");
-  }
-
-  private static BlazeCommand.Builder emptyBuilder() {
+  private BlazeCommand.Builder emptyBuilder() {
     return BlazeCommand.builder("/usr/bin/blaze", BlazeCommandName.BUILD);
   }
 
@@ -202,9 +152,6 @@ public class AspectStrategyTest extends BlazeTestCase {
   }
 
   private static class MockAspectStrategy extends AspectStrategy {
-    private MockAspectStrategy() {
-      super(/* aspectSupportsDirectDepsTrimming= */ true);
-    }
 
     @Override
     public String getName() {
@@ -212,8 +159,30 @@ public class AspectStrategyTest extends BlazeTestCase {
     }
 
     @Override
-    protected List<String> getAspectFlags() {
-      return ImmutableList.of();
+    public Path prefix() {
+      return Path.of("mock");
+    }
+
+    @Override
+    public List<AspectWriter> writers() {
+      return List.of();
+    }
+
+    @Override
+    public Optional<Label> resolve(Project project, String relativePath) {
+      return Optional.empty();
+    }
+
+    @Override
+    protected Optional<String> getAspectFlag(Project project, Set<LanguageClass> activeLanguages) {
+      return Optional.empty();
+    }
+
+    @Override
+    protected ImmutableList<String> genericOutputGroup(OutputGroup outputGroup) {
+      return outputGroup == OutputGroup.INFO
+          ? ImmutableList.of(outputGroup.prefix + "-generic")
+          : ImmutableList.of();
     }
   }
 }

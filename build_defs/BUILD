@@ -1,6 +1,8 @@
 # Description:
 #
 # Scripts for building IntelliJ plugins
+
+load("@rules_python//python:defs.bzl", "py_binary")
 load(
     "//:build-visibility.bzl",
     "INTELLIJ_PLUGINS_VISIBILITY",
@@ -37,11 +39,5 @@ py_binary(
 py_binary(
     name = "package_meta_inf_files",
     srcs = ["package_meta_inf_files.py"],
-    python_version = "PY3",
-)
-
-py_binary(
-    name = "zip_plugin_files",
-    srcs = ["zip_plugin_files.py"],
     python_version = "PY3",
 )

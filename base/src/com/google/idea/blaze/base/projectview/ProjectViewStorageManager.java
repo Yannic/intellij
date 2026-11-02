@@ -17,7 +17,7 @@ package com.google.idea.blaze.base.projectview;
 
 import com.google.common.collect.ImmutableList;
 import com.google.idea.blaze.base.settings.BuildSystemName;
-import com.intellij.openapi.components.ServiceManager;
+import com.intellij.openapi.application.ApplicationManager;
 import java.io.File;
 import java.io.IOException;
 import javax.annotation.Nullable;
@@ -31,44 +31,26 @@ import org.jetbrains.annotations.NotNull;
  */
 public abstract class ProjectViewStorageManager {
 
-  private static final String BLAZE_EXTENSION = "blazeproject";
-  private static final String BAZEL_EXTENSION = "bazelproject";
-  private static final String LEGACY_EXTENSION = "asproject";
-
-  public static final ImmutableList<String> VALID_EXTENSIONS =
-      ImmutableList.of(BLAZE_EXTENSION, BAZEL_EXTENSION, LEGACY_EXTENSION);
+  public static final String EXTENSION = "bazelproject";
 
   public static boolean isProjectViewFile(@NotNull File file) {
     return isProjectViewFile(file.getName());
   }
 
   public static boolean isProjectViewFile(String fileName) {
-    for (String ext : VALID_EXTENSIONS) {
-      if (fileName.endsWith("." + ext)) {
-        return true;
-      }
-    }
-    return false;
+    return fileName.endsWith("." + EXTENSION);
   }
 
-  public static String getProjectViewFileName(BuildSystemName buildSystemName) {
-    switch (buildSystemName) {
-      case Blaze:
-        return "." + BLAZE_EXTENSION;
-      case Bazel:
-        return "." + BAZEL_EXTENSION;
-      default:
-        throw new IllegalArgumentException("Unrecognized build system type: " + buildSystemName);
-    }
+  public static String getProjectViewFileName() {
+    return "." + EXTENSION;
   }
 
-  public static File getLocalProjectViewFileName(
-      BuildSystemName buildSystemName, File projectDataDirectory) {
-    return new File(projectDataDirectory, getProjectViewFileName(buildSystemName));
+  public static File getLocalProjectViewFileName(File projectDataDirectory) {
+    return new File(projectDataDirectory, getProjectViewFileName());
   }
 
   public static ProjectViewStorageManager getInstance() {
-    return ServiceManager.getService(ProjectViewStorageManager.class);
+    return ApplicationManager.getApplication().getService(ProjectViewStorageManager.class);
   }
 
   @Nullable

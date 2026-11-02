@@ -129,7 +129,7 @@ public class BlazeJavaScriptTestRunLineMarkerContributor extends RunLineMarkerCo
                 ImmutableList.of(), BlazeSyncModificationTracker.getInstance(project));
           }
           ImmutableMultimap<TargetKey, TargetKey> rdeps = ReverseDependencyMap.get(project);
-          TargetMap targetMap = projectData.getTargetMap();
+          TargetMap targetMap = projectData.targetMap();
           return Result.create(
               SourceToTargetFinder.findTargetsForSourceFile(
                       project,
@@ -148,7 +148,7 @@ public class BlazeJavaScriptTestRunLineMarkerContributor extends RunLineMarkerCo
                         TargetIdeInfo target = targetMap.get(key);
                         return target != null && target.getKind().isWebTest();
                       })
-                  .map(TargetKey::getLabel)
+                  .map(TargetKey::label)
                   .collect(ImmutableList.toImmutableList()),
               BlazeSyncModificationTracker.getInstance(project));
         });

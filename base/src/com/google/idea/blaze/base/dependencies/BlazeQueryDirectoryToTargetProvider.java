@@ -15,61 +15,67 @@
  */
 package com.google.idea.blaze.base.dependencies;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.stream.Collectors.joining;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import com.google.idea.blaze.base.async.process.ExternalTask;
-import com.google.idea.blaze.base.async.process.LineProcessingOutputStream;
-import com.google.idea.blaze.base.bazel.BuildSystem;
+import com.google.idea.blaze.base.bazel.BazelExitCodeException;
+import com.google.idea.blaze.base.bazel.BazelExitCodeException.ThrowOption;
+import com.google.idea.blaze.base.buildview.BazelExecService;
 import com.google.idea.blaze.base.command.BlazeCommand;
 import com.google.idea.blaze.base.command.BlazeCommandName;
 import com.google.idea.blaze.base.model.primitives.TargetExpression;
-import com.google.idea.blaze.base.model.primitives.WorkspacePath;
-import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.query.BlazeQueryLabelKindParser;
 import com.google.idea.blaze.base.scope.BlazeContext;
-import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.sync.projectview.ImportRoots;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolver;
+import com.google.idea.blaze.exception.BuildException;
+import com.intellij.execution.ExecutionException;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.util.SystemInfo;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.file.Files;
 import java.util.List;
 import javax.annotation.Nullable;
 
 /** Runs a blaze query to derive a set of targets from the project's {@link ImportRoots}. */
 public class BlazeQueryDirectoryToTargetProvider implements DirectoryToTargetProvider {
-
   private static final Logger logger =
       Logger.getInstance(BlazeQueryDirectoryToTargetProvider.class);
 
-  @Override
   @Nullable
+  @Override
   public List<TargetInfo> doExpandDirectoryTargets(
       Project project,
+      Boolean shouldManualTargetSync,
       ImportRoots directories,
       WorkspacePathResolver pathResolver,
       BlazeContext context) {
-    return runQuery(project, getQueryString(directories), context);
+    return runQuery(project, getQueryString(directories, shouldManualTargetSync, pathResolver), context);
   }
 
-  private static String getQueryString(ImportRoots directories) {
-    StringBuilder targets = new StringBuilder();
-    targets.append(
-        directories.rootDirectories().stream()
-            .map(w -> TargetExpression.allFromPackageRecursive(w).toString())
-            .collect(joining(" + ")));
-    for (WorkspacePath excluded : directories.excludeDirectories()) {
-      targets.append(" - " + TargetExpression.allFromPackageRecursive(excluded).toString());
+  @VisibleForTesting
+  public static String getQueryString(ImportRoots directories, boolean allowManualTargetsSync, WorkspacePathResolver pathResolver) {
+    final var builder = new QueryBuilder()
+        .excludeNoIdeTag(true)
+        .excludeManualTag(!allowManualTargetsSync);
+
+    for (final var directory : directories.rootDirectories()) {
+      builder.includeTarget(TargetExpression.allFromPackageRecursive(directory));
+    }
+    
+    for (final var directory : directories.excludePathsForBazelQuery()) {
+      // Bazel produces errors for paths that don't exist (e.g. bazel-out in a project that overrides the default symlinks),
+      // so only include paths that actually exist.
+      if (Files.exists(pathResolver.resolveToFile(directory).toPath())) {
+        builder.excludeTarget(TargetExpression.allFromPackageRecursive(directory));
+      }
     }
 
-    // exclude 'manual' targets, which shouldn't be built when expanding wildcard target patterns
-    if (SystemInfo.isWindows) {
-      // TODO(b/201974254): Windows support for Bazel sync (see
-      // https://github.com/bazelbuild/intellij/issues/113).
-      return String.format("attr('tags', '^((?!manual).)*$', %s)", targets);
-    }
-    return String.format("attr(\"tags\", \"^((?!manual).)*$\", %s)", targets);
+    return builder.build();
   }
 
   /**
@@ -77,38 +83,26 @@ public class BlazeQueryDirectoryToTargetProvider implements DirectoryToTargetPro
    * the query failed.
    */
   @Nullable
-  private static ImmutableList<TargetInfo> runQuery(
-      Project project, String query, BlazeContext context) {
-    BuildSystem buildSystem = Blaze.getBuildSystemProvider(project).getBuildSystem();
-    BlazeCommand command =
-        BlazeCommand.builder(
-                buildSystem.getDefaultInvoker(project, context), BlazeCommandName.QUERY)
-            .addBlazeFlags("--output=label_kind")
-            .addBlazeFlags("--keep_going")
-            .addBlazeFlags(query)
-            .build();
+  private static ImmutableList<TargetInfo> runQuery(Project project, String query, BlazeContext context) {
+    final var command = BlazeCommand.builder(BlazeCommandName.QUERY)
+        .addBlazeFlags("--output=label_kind")
+        .addBlazeFlags("--keep_going")
+        .addBlazeFlags(query);
 
-    BlazeQueryLabelKindParser outputProcessor = new BlazeQueryLabelKindParser(t -> true);
-    int retVal =
-        ExternalTask.builder(WorkspaceRoot.fromProject(project))
-            .addBlazeCommand(command)
-            .context(context)
-            .stdout(LineProcessingOutputStream.of(outputProcessor))
-            .stderr(
-                LineProcessingOutputStream.of(
-                    line -> {
-                      // errors are expected, so limit logging to info level
-                      logger.info(line);
-                      return true;
-                    }))
-            .build()
-            .run();
-    if (retVal != 0 && retVal != 3) {
-      // A return value of 3 indicates that the query completed, but there were some
-      // errors in the query, like querying a directory with no build files / no targets.
-      // Instead of returning null, we allow returning the parsed targets, if any.
+    final var outputProcessor = new BlazeQueryLabelKindParser(t -> true);
+    try (final var result = BazelExecService.of(project).exec(context, command)) {
+      result.throwOnFailure(ThrowOption.ALLOW_PARTIAL_SUCCESS);
+
+      try (final var queryResultStream = result.getStdout()) {
+        new BufferedReader(new InputStreamReader(queryResultStream, UTF_8))
+            .lines()
+            .forEach(outputProcessor::processLine);
+      }
+
+      return outputProcessor.getTargets();
+    } catch (IOException | BuildException | ExecutionException e) {
+      logger.error(e.getMessage(), e);
       return null;
     }
-    return outputProcessor.getTargets();
   }
 }

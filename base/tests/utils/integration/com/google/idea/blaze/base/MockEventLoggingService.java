@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 The Bazel Authors. All rights reserved.
+ * Copyright 2026 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,9 +22,10 @@ import com.google.idea.blaze.base.logging.utils.HighlightStats;
 import com.google.idea.blaze.base.logging.utils.SyncStats;
 import com.google.idea.testing.ServiceHelper;
 import com.intellij.openapi.Disposable;
+
+import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Nullable;
 
 /** Provides a {@link EventLoggingService} for integration tests. */
 public class MockEventLoggingService implements EventLoggingService {

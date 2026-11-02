@@ -16,41 +16,46 @@
 package com.google.idea.blaze.base.buildmodifier;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.common.base.Strings;
-import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.CharStreams;
 import com.google.idea.blaze.base.lang.buildfile.psi.BuildFile;
-import com.google.idea.blaze.base.lang.buildfile.psi.BuildFile.BlazeFileType;
-import com.google.idea.common.experiments.FeatureRolloutExperiment;
+import com.intellij.formatting.FormattingContext;
 import com.intellij.formatting.service.AsyncDocumentFormattingService;
 import com.intellij.formatting.service.AsyncFormattingRequest;
+import com.intellij.openapi.editor.Document;
+import com.intellij.openapi.project.Project;
 import com.intellij.psi.PsiFile;
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.Optional;
-import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
 /** Formatting support for BUILD/bzl sources, delegating to an external 'buildifier' binary. */
 public final class BuildifierFormattingService extends AsyncDocumentFormattingService {
 
-  static final FeatureRolloutExperiment useNewBuildifierFormattingService =
-      new FeatureRolloutExperiment("formatter.api.buildifier");
-
-  static final Supplier<Optional<String>> binaryPath = Suppliers.memoize(() -> getBinary());
-
   @Override
   @Nullable
   protected FormattingTask createFormattingTask(AsyncFormattingRequest request) {
-    return binaryPath
-        .get()
-        .map(binary -> getCommandLineArgs(request, binary))
-        .map(args -> new BuildifierFormattingTask(request, args))
-        .orElse(null);
+    final var ctx = request.getContext();
+
+    BuildFile buildFile = (BuildFile) ctx.getContainingFile();
+    Optional<String> binary = getBinary(ctx.getProject());
+    if (binary.isEmpty()) {
+      notifyBinaryMissing(ctx.getProject());
+      return null;
+    }
+
+    return new BuildifierFormattingTask(
+        request,
+        BuildFileFormatter.getCommandLineArgs(binary.get(), buildFile),
+        BuildFileFormatter.workingDirectory(buildFile)
+    );
   }
 
   @Override
@@ -64,6 +69,12 @@ public final class BuildifierFormattingService extends AsyncDocumentFormattingSe
   }
 
   @Override
+  protected void prepareForFormatting(Document document, FormattingContext context) {
+    // The default implementation saves the document so that the formatter can read it from disk.
+    // buildifier is fed the document text over stdin instead, so there is nothing to prepare.
+  }
+
+  @Override
   public ImmutableSet<Feature> getFeatures() {
     // Although buildifier does NOT support range formatting, we assume it does and then just format
     // the whole file
@@ -72,14 +83,12 @@ public final class BuildifierFormattingService extends AsyncDocumentFormattingSe
 
   @Override
   public boolean canFormat(PsiFile file) {
-    return useNewBuildifierFormattingService.isEnabled()
-        && file instanceof BuildFile
-        && binaryPath.get().isPresent();
+    return file instanceof BuildFile;
   }
 
-  private static Optional<String> getBinary() {
+  private static Optional<String> getBinary(Project project) {
     for (BuildifierBinaryProvider provider : BuildifierBinaryProvider.EP_NAME.getExtensions()) {
-      String path = provider.getBuildifierBinaryPath();
+      String path = provider.getBuildifierBinaryPath(project);
       if (!Strings.isNullOrEmpty(path)) {
         return Optional.of(path);
       }
@@ -87,39 +96,44 @@ public final class BuildifierFormattingService extends AsyncDocumentFormattingSe
     return Optional.empty();
   }
 
-  private static ImmutableList<String> getCommandLineArgs(
-      AsyncFormattingRequest request, String binary) {
-    ImmutableList.Builder<String> cmd = ImmutableList.builder();
-    cmd.add(binary);
-    BlazeFileType type = ((BuildFile) request.getContext().getContainingFile()).getBlazeFileType();
-    return cmd.add(fileTypeArg(type)).build();
-  }
-
-  private static String fileTypeArg(BlazeFileType fileType) {
-    return fileType == BlazeFileType.SkylarkExtension ? "--type=bzl" : "--type=build";
+  private static void notifyBinaryMissing(Project project) {
+    if (BuildifierDownloader.canDownload()) {
+      BuildifierNotification.showDownloadNotification(project);
+    } else {
+      BuildifierNotification.showNotFoundNotification();
+    }
   }
 
   private static final class BuildifierFormattingTask implements FormattingTask {
     private final AsyncFormattingRequest request;
     private final ImmutableList<String> args;
+    @Nullable private final File workingDirectory;
     private Process process;
 
-    public BuildifierFormattingTask(AsyncFormattingRequest request, ImmutableList<String> args) {
+    public BuildifierFormattingTask(
+        AsyncFormattingRequest request,
+        ImmutableList<String> args,
+        @Nullable File workingDirectory) {
       this.request = request;
       this.args = args;
+      this.workingDirectory = workingDirectory;
     }
 
     @Override
     public void run() {
       try {
-        process = new ProcessBuilder(args).start();
+        process = new ProcessBuilder(args).directory(workingDirectory).start();
         process.getOutputStream().write(request.getDocumentText().getBytes(UTF_8));
         process.getOutputStream().close();
-
         BufferedReader reader =
             new BufferedReader(new InputStreamReader(process.getInputStream(), UTF_8));
         String formattedText = CharStreams.toString(reader);
-        if (process.exitValue() == 0) {
+        boolean exited = process.waitFor(10, SECONDS);
+
+        if (!exited) {
+          process.destroyForcibly();
+          request.onError("Error running buildifier", "process timed out.");
+        } else if (process.exitValue() == 0) {
           request.onTextReady(formattedText);
         } else {
           request.onError(
@@ -128,14 +142,11 @@ public final class BuildifierFormattingService extends AsyncDocumentFormattingSe
                   + request.getContext().getContainingFile().getName()
                   + " have syntax errors?");
         }
-      } catch (IOException e) {
-        request.onError("Error running buildifier", e.getMessage());
-      }
-      try {
-        process.waitFor();
       } catch (InterruptedException e) {
         process.destroy();
         Thread.currentThread().interrupt();
+      } catch (IOException e) {
+        request.onError("Error running buildifier", e.getMessage());
       }
     }
 

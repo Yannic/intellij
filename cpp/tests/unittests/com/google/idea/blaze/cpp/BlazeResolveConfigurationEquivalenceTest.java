@@ -41,6 +41,8 @@ import com.google.idea.blaze.base.model.MockBlazeProjectDataBuilder;
 import com.google.idea.blaze.base.model.primitives.ExecutionRootPath;
 import com.google.idea.blaze.base.model.primitives.Kind;
 import com.google.idea.blaze.base.model.primitives.Kind.Provider;
+import com.google.idea.blaze.cpp.environment.EnvironmentProcessor;
+import com.google.idea.blaze.cpp.environment.ProcSelfCwdEnvironmentProcessor;
 import com.google.idea.blaze.base.model.primitives.TargetExpression;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
@@ -54,6 +56,7 @@ import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.ErrorCollector;
 import com.google.idea.blaze.base.scope.output.IssueOutput;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
 import com.google.idea.common.experiments.ExperimentService;
 import com.google.idea.common.experiments.MockExperimentService;
@@ -61,6 +64,7 @@ import com.intellij.mock.MockPsiManager;
 import com.intellij.openapi.extensions.impl.ExtensionPointImpl;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.impl.ProgressManagerImpl;
+import com.intellij.openapi.util.registry.Registry;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileManager;
@@ -75,9 +79,12 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/** Tests that we group equivalent {@link BlazeResolveConfiguration}s. */
+/**
+ * Tests that we group equivalent {@link BlazeResolveConfiguration}s.
+ */
 @RunWith(JUnit4.class)
 public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
+
   private final BlazeContext context = BlazeContext.create();
   private final ErrorCollector errorCollector = new ErrorCollector();
   private final WorkspaceRoot workspaceRoot = new WorkspaceRoot(new File("/root"));
@@ -95,7 +102,7 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
         CompilerVersionChecker.class, new MockCompilerVersionChecker("1234"));
 
     applicationServices.register(ProgressManager.class, new ProgressManagerImpl());
-    applicationServices.register(CompilerWrapperProvider.class, new CompilerWrapperProviderImpl());
+    projectServices.register(XcodeCompilerSettingsProvider.class, new MockXcodeSettingsProvider());
     applicationServices.register(VirtualFileManager.class, mock(VirtualFileManager.class));
     applicationServices.register(FileOperationProvider.class, new FileOperationProvider());
     mockFileSystem = mock(LocalFileSystem.class);
@@ -108,17 +115,25 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
     ep.registerExtension(new CppBlazeRules());
     applicationServices.register(Kind.ApplicationState.class, new Kind.ApplicationState());
 
+    registerExtensionPoint(EnvironmentProcessor.EP_NAME, EnvironmentProcessor.class)
+        .registerExtension(new ProcSelfCwdEnvironmentProcessor());
+
     projectServices.register(PsiManager.class, new MockPsiManager(project));
     projectServices.register(
         BlazeImportSettingsManager.class, new BlazeImportSettingsManager(project));
+    projectServices.register(HeaderRootTrimmer.class, new HeaderRootTrimmerMock());
+
+    Registry.get(BlazeConfigurationResolver.SYNC_EXTERNAL_TARGETS_FROM_DIRECTORIES_KEY).setValue(true);
 
     BlazeImportSettingsManager.getInstance(getProject())
         .setImportSettings(
             new BlazeImportSettings(
-                "", "", "", "", getBuildSystemProvider().getBuildSystem().getName()));
-
-    registerExtensionPoint(
-        BlazeCompilerFlagsProcessor.EP_NAME, BlazeCompilerFlagsProcessor.Provider.class);
+                "",
+                "",
+                "",
+                "",
+                getBuildSystemProvider().getBuildSystem().getName(),
+                ProjectType.ASPECT_SYNC));
 
     context.addOutputSink(IssueOutput.class, errorCollector);
 
@@ -166,7 +181,7 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
     assertThat(get(configurations, "//foo/bar:one and 2 other target(s)")).isNotNull();
     for (BlazeResolveConfiguration configuration : configurations) {
       assertThat(getHeaders(configuration)).isEmpty();
-      assertThat(configuration.getTargetCopts()).isEmpty();
+      assertThat(configuration.getConfigurationData().localCopts()).isEmpty();
     }
   }
 
@@ -202,9 +217,9 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
             .build();
     List<BlazeResolveConfiguration> configurations = resolve(projectView, targetMap);
     assertThat(configurations).hasSize(2);
-    assertThat(get(configurations, "//foo/bar:one and 1 other target(s)").getTargetCopts())
+    assertThat(get(configurations, "//foo/bar:one and 1 other target(s)").getConfigurationData().localCopts())
         .containsExactly("-DSAME=1");
-    assertThat(get(configurations, "//foo/bar:three").getTargetCopts())
+    assertThat(get(configurations, "//foo/bar:three").getConfigurationData().localCopts())
         .containsExactly("-DDIFFERENT=1");
     for (BlazeResolveConfiguration configuration : configurations) {
       assertThat(getHeaders(configuration)).isEmpty();
@@ -251,7 +266,7 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
     assertThat(getHeaders(get(configurations, "//foo/bar:three")))
         .containsExactly(header("foo/different"));
     for (BlazeResolveConfiguration configuration : configurations) {
-      assertThat(configuration.getTargetCopts()).isEmpty();
+      assertThat(configuration.getConfigurationData().localCopts()).isEmpty();
     }
   }
 
@@ -327,53 +342,53 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
   public void changeDefines_testIncrementalUpdate_0() {
     Map.Entry<List<String>, ImmutableList<String>> testCase =
         Iterables.get(permutationsAndExpectations.entrySet(), 0);
-    do_changeDefines_testIncrementalUpdate(testCase.getKey(), testCase.getValue());
+    doChangeDefinesTestIncrementalUpdate(testCase.getKey(), testCase.getValue());
   }
 
   @Test
   public void changeDefines_testIncrementalUpdate_1() {
     Map.Entry<List<String>, ImmutableList<String>> testCase =
         Iterables.get(permutationsAndExpectations.entrySet(), 1);
-    do_changeDefines_testIncrementalUpdate(testCase.getKey(), testCase.getValue());
+    doChangeDefinesTestIncrementalUpdate(testCase.getKey(), testCase.getValue());
   }
 
   @Test
   public void changeDefines_testIncrementalUpdate_2() {
     Map.Entry<List<String>, ImmutableList<String>> testCase =
         Iterables.get(permutationsAndExpectations.entrySet(), 2);
-    do_changeDefines_testIncrementalUpdate(testCase.getKey(), testCase.getValue());
+    doChangeDefinesTestIncrementalUpdate(testCase.getKey(), testCase.getValue());
   }
 
   @Test
   public void changeDefines_testIncrementalUpdate_3() {
     Map.Entry<List<String>, ImmutableList<String>> testCase =
         Iterables.get(permutationsAndExpectations.entrySet(), 3);
-    do_changeDefines_testIncrementalUpdate(testCase.getKey(), testCase.getValue());
+    doChangeDefinesTestIncrementalUpdate(testCase.getKey(), testCase.getValue());
   }
 
   @Test
   public void changeDefines_testIncrementalUpdate_4() {
     Map.Entry<List<String>, ImmutableList<String>> testCase =
         Iterables.get(permutationsAndExpectations.entrySet(), 4);
-    do_changeDefines_testIncrementalUpdate(testCase.getKey(), testCase.getValue());
+    doChangeDefinesTestIncrementalUpdate(testCase.getKey(), testCase.getValue());
   }
 
   @Test
   public void changeDefines_testIncrementalUpdate_5() {
     Map.Entry<List<String>, ImmutableList<String>> testCase =
         Iterables.get(permutationsAndExpectations.entrySet(), 5);
-    do_changeDefines_testIncrementalUpdate(testCase.getKey(), testCase.getValue());
+    doChangeDefinesTestIncrementalUpdate(testCase.getKey(), testCase.getValue());
   }
 
   @Test
   public void changeDefines_testIncrementalUpdate_6() {
     Map.Entry<List<String>, ImmutableList<String>> testCase =
         Iterables.get(permutationsAndExpectations.entrySet(), 6);
-    do_changeDefines_testIncrementalUpdate(testCase.getKey(), testCase.getValue());
+    doChangeDefinesTestIncrementalUpdate(testCase.getKey(), testCase.getValue());
     assertThat(permutationsAndExpectations.size()).isEqualTo(7);
   }
 
-  private void do_changeDefines_testIncrementalUpdate(
+  private void doChangeDefinesTestIncrementalUpdate(
       List<String> labelsToFlip, ImmutableList<String> newConfigurationLabels) {
     ProjectView projectView = projectView(directories("foo/bar"), targets("//foo/bar:...:all"));
     List<BlazeResolveConfiguration> configurations =
@@ -516,6 +531,177 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
     assertThat(get(newConfigurations, "//foo/bar:a and 3 other target(s)")).isNotNull();
   }
 
+  @Test
+  public void testTargetsWithSameConfigurationId_groupedByEquivalence() {
+    final var projectView = projectView(
+        directories("foo/bar"),
+        targets("//foo/bar:one", "//foo/bar:two", "//foo/bar:three")
+    );
+
+    final var targetMap = TargetMapBuilder.builder()
+        .addTarget(createCcToolchain())
+        .addTarget(createCcTarget(
+                "//foo/bar:one",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                sources("foo/bar/one.cc"),
+                copts(),
+                includes()
+            ).setConfigurationId("configA")
+        )
+        .addTarget(createCcTarget(
+                "//foo/bar:two",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                sources("foo/bar/two.cc"),
+                copts(),
+                includes()
+            ).setConfigurationId("configA")
+        )
+        .addTarget(createCcTarget(
+                "//foo/bar:three",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                sources("foo/bar/three.cc"),
+                copts(),
+                includes()
+            ).setConfigurationId("configA")
+        )
+        .build();
+
+    final var configurations = resolve(projectView, targetMap);
+    assertThat(configurations).hasSize(1);
+    assertThat(get(configurations, "//foo/bar:one (configA) and 2 other target(s)")).isNotNull();
+  }
+
+  @Test
+  public void testTargetsWithDifferentConfigurationIds_separatedByEquivalence() {
+    final var projectView = projectView(
+        directories("foo/bar"),
+        targets("//foo/bar:binary", "//foo/bar:test")
+    );
+
+    final var targetMap = TargetMapBuilder.builder()
+        .addTarget(createCcToolchain())
+        .addTarget(createCcTarget(
+                "//foo/bar:binary",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                sources("foo/bar/binary.cc"),
+                copts(),
+                includes()
+            ).setConfigurationId("configA")
+        )
+        .addTarget(createCcTarget(
+                "//foo/bar:test",
+                CppBlazeRules.RuleTypes.CC_TEST.getKind(),
+                sources("foo/bar/test.cc"),
+                copts(),
+                includes()
+            ).setConfigurationId("configB")
+        )
+        .build();
+
+    final var configurations = resolve(projectView, targetMap);
+    assertThat(configurations).hasSize(2);
+    assertThat(get(configurations, "//foo/bar:binary (configA)")).isNotNull();
+    assertThat(get(configurations, "//foo/bar:test (configB)")).isNotNull();
+  }
+
+  @Test
+  public void testSameLabelDifferentConfigs_sameCompilerSettings_separated() {
+    final var projectView = projectView(directories("foo/bar"), targets("//foo/bar:binary"));
+
+    final var targetMap = TargetMapBuilder.builder()
+        .addTarget(createCcToolchain())
+        .addTarget(createCcTarget(
+                "//foo/bar:binary",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                sources("foo/bar/binary.cc"),
+                copts("-DFOO=1"),
+                copts("-std=c11"),
+                copts("-std=c++17"),
+                includes()
+            ).setConfigurationId("configA")
+        )
+        .addTarget(createCcTarget(
+                "//foo/bar:binary",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                sources("foo/bar/binary.cc"),
+                copts("-DFOO=1"),
+                copts("-std=c11"),
+                copts("-std=c++17"),
+                includes()
+            ).setConfigurationId("configB")
+        )
+        .build();
+
+    final var configurations = resolve(projectView, targetMap);
+    assertThat(configurations).hasSize(2);
+    assertThat(get(configurations, "//foo/bar:binary (configA)")).isNotNull();
+    assertThat(get(configurations, "//foo/bar:binary (configB)")).isNotNull();
+  }
+
+  @Test
+  public void testSameLabelDifferentConfigs_differentCopts_separateConfigurations() {
+    final var projectView = projectView(directories("foo/bar"), targets("//foo/bar:binary"));
+
+    final var targetMap = TargetMapBuilder.builder()
+        .addTarget(createCcToolchain())
+        .addTarget(createCcTarget(
+                "//foo/bar:binary",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                sources("foo/bar/binary.cc"),
+                copts("-DARM=1"),
+                includes()
+            ).setConfigurationId("configA")
+        )
+        .addTarget(createCcTarget(
+                "//foo/bar:binary",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                sources("foo/bar/binary.cc"),
+                copts("-DX86=1"),
+                includes()
+            ).setConfigurationId("configB")
+        )
+        .build();
+
+    final var configurations = resolve(projectView, targetMap);
+    assertThat(configurations).hasSize(2);
+    assertThat(get(configurations, "//foo/bar:binary (configA)")).isNotNull();
+    assertThat(get(configurations, "//foo/bar:binary (configB)")).isNotNull();
+  }
+
+  @Test
+  public void testSameLabelDifferentConfigs_differentCxxopts_separateConfigurations() {
+    final var projectView = projectView(directories("foo/bar"), targets("//foo/bar:binary"));
+
+    final var targetMap = TargetMapBuilder.builder()
+        .addTarget(createCcToolchain())
+        .addTarget(createCcTarget(
+                "//foo/bar:binary",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                sources("foo/bar/binary.cc"),
+                copts(),
+                copts(),
+                copts("-std=c++17"),
+                includes()
+            ).setConfigurationId("configA")
+        )
+        .addTarget(createCcTarget(
+                "//foo/bar:binary",
+                CppBlazeRules.RuleTypes.CC_BINARY.getKind(),
+                sources("foo/bar/binary.cc"),
+                copts(),
+                copts(),
+                copts("-std=c++20"),
+                includes()
+            ).setConfigurationId("configB")
+        )
+        .build();
+
+    final var configurations = resolve(projectView, targetMap);
+    assertThat(configurations).hasSize(2);
+    assertThat(get(configurations, "//foo/bar:binary (configA)")).isNotNull();
+    assertThat(get(configurations, "//foo/bar:binary (configB)")).isNotNull();
+  }
+
   private static List<ArtifactLocation> sources(String... paths) {
     return Arrays.stream(paths)
         .map(path -> ArtifactLocation.builder().setRelativePath(path).setIsSource(true).build())
@@ -527,7 +713,7 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
   }
 
   private static List<ExecutionRootPath> includes(String... paths) {
-    return Arrays.stream(paths).map(ExecutionRootPath::new).collect(Collectors.toList());
+    return Arrays.stream(paths).map(ExecutionRootPath::create).collect(Collectors.toList());
   }
 
   private static TargetIdeInfo.Builder createCcTarget(
@@ -536,22 +722,47 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
       List<ArtifactLocation> sources,
       List<String> copts,
       List<ExecutionRootPath> includes) {
+    return createCcTarget(label, kind, sources, copts, ImmutableList.of(), ImmutableList.of(), includes);
+  }
+
+  private static TargetIdeInfo.Builder createCcTarget(
+      String label,
+      Kind kind,
+      List<ArtifactLocation> sources,
+      List<String> copts,
+      List<String> conlyopts,
+      List<String> cxxopts,
+      List<ExecutionRootPath> includes) {
     TargetIdeInfo.Builder targetInfo =
         TargetIdeInfo.builder().setLabel(label).setKind(kind).addDependency("//:toolchain");
     sources.forEach(targetInfo::addSource);
-    return targetInfo.setCInfo(
-        CIdeInfo.builder()
-            .addSources(sources)
-            .addLocalCopts(copts)
-            .addTransitiveIncludeDirectories(includes));
+    return targetInfo.setCInfo(CIdeInfo.builder()
+        .setRuleContext(CIdeInfo.RuleContext.builder()
+            .setCopts(ImmutableList.copyOf(copts))
+            .setConlyopts(ImmutableList.copyOf(conlyopts))
+            .setCxxopts(ImmutableList.copyOf(cxxopts))
+            .build()
+        )
+        .setCompilationContext(CIdeInfo.CompilationContext.builder()
+            .setIncludes(ImmutableList.copyOf(includes))
+            .build()
+        )
+    );
   }
 
   private static TargetIdeInfo.Builder createCcToolchain() {
     return TargetIdeInfo.builder()
         .setLabel("//:toolchain")
         .setKind(CppBlazeRules.RuleTypes.CC_TOOLCHAIN.getKind())
-        .setCToolchainInfo(
-            CToolchainIdeInfo.builder().setCppExecutable(new ExecutionRootPath("cc")));
+        .setCToolchainInfo(CToolchainIdeInfo.builder()
+            .setCCompiler(ExecutionRootPath.create("cc"))
+            .setCppCompiler(ExecutionRootPath.create("cc"))
+            .setCompilerName("cc")
+            .setCCompilerOptions(ImmutableList.of())
+            .setCppCompilerOptions(ImmutableList.of())
+            .setBuiltInIncludeDirectories(ImmutableList.of())
+            .setTargetName("toolchain")
+        );
   }
 
   private static ListSection<DirectoryEntry> directories(String... directories) {
@@ -596,23 +807,27 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
             .filter(c -> c.getDisplayName().equals(name))
             .collect(Collectors.toList());
     assertWithMessage(
-            String.format(
-                "%s contains %s",
-                configurations.stream()
-                    .map(BlazeResolveConfiguration::getDisplayName)
-                    .collect(Collectors.toList()),
-                name))
+        String.format(
+            "%s contains %s",
+            configurations.stream()
+                .map(BlazeResolveConfiguration::getDisplayName)
+                .collect(Collectors.toList()),
+            name))
         .that(filteredConfigurations)
         .hasSize(1);
     return filteredConfigurations.get(0);
   }
 
   private ExecutionRootPath header(String path) {
-    return new ExecutionRootPath(path);
+    return ExecutionRootPath.create(path);
   }
 
   private static List<ExecutionRootPath> getHeaders(BlazeResolveConfiguration configuration) {
-    return configuration.getLibraryHeadersRootsInternal();
+    ImmutableList.Builder<ExecutionRootPath> roots = ImmutableList.builder();
+    roots.addAll(configuration.getConfigurationData().transitiveQuoteIncludeDirectories());
+    roots.addAll(configuration.getConfigurationData().transitiveIncludeDirectories());
+    roots.addAll(configuration.getConfigurationData().transitiveSystemIncludeDirectories());
+    return roots.build();
   }
 
   private void createVirtualFile(String path) {
@@ -632,21 +847,18 @@ public class BlazeResolveConfigurationEquivalenceTest extends BlazeTestCase {
       ReusedConfigurationExpectations expected) {
     for (String label : expected.reusedLabels) {
       assertWithMessage(String.format("Checking that %s is reused", label))
-          .that(
-              get(newConfigurations, label)
-                  .isEquivalentConfigurations(get(oldConfigurations, label)))
-          .isTrue();
+          .that(get(newConfigurations, label))
+          .isEqualTo(get(oldConfigurations, label));
     }
     for (String label : expected.notReusedLabels) {
       assertWithMessage(String.format("Checking that %s is NOT reused", label))
-          .that(
-              get(newConfigurations, label)
-                  .isEquivalentConfigurations(get(oldConfigurations, label)))
-          .isFalse();
+          .that(get(newConfigurations, label))
+          .isNotEqualTo(get(oldConfigurations, label));
     }
   }
 
   private static class ReusedConfigurationExpectations {
+
     final ImmutableCollection<String> reusedLabels;
     final ImmutableCollection<String> notReusedLabels;
 

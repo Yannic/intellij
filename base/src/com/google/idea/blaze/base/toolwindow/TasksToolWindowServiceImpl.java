@@ -20,6 +20,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.idea.blaze.base.scope.output.StateUpdate;
 import com.google.idea.blaze.base.scope.output.StatusOutput;
 import com.google.idea.blaze.common.PrintOutput;
+import com.google.idea.blaze.common.TimeSource;
 import com.intellij.execution.filters.Filter;
 import com.intellij.execution.filters.HyperlinkInfo;
 import com.intellij.openapi.Disposable;
@@ -37,11 +38,11 @@ final class TasksToolWindowServiceImpl implements TasksToolWindowService, Dispos
   private final ToolWindowTabs tabs;
   private final Project project;
 
+  @SuppressWarnings("unused")
   TasksToolWindowServiceImpl(Project project) {
     this(project, Instant::now);
   }
 
-  @VisibleForTesting
   @NonInjectable
   TasksToolWindowServiceImpl(Project project, TimeSource timeSource) {
     this.project = project;
@@ -83,11 +84,10 @@ final class TasksToolWindowServiceImpl implements TasksToolWindowService, Dispos
 
   /** Update the state and the view when task finishes */
   @Override
-  public void finishTask(Task task, boolean hasErrors, boolean isCancelled) {
+  public void finishTask(Task task, Task.Status status) {
 
     task.setEndTime(timeSource.now());
-    task.setCancelled(isCancelled);
-    task.setHasErrors(hasErrors);
+    task.setStatus(status);
     ApplicationManager.getApplication().invokeLater(() -> tabs.finishTask(task));
   }
 

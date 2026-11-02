@@ -38,6 +38,7 @@ public enum TokenKind {
   EQUALS_EQUALS("=="),
   EXCEPT("except"),
   FINALLY("finally"),
+  FLOAT("float"),
   FOR("for"),
   FROM("from"),
   GLOBAL("global"),
@@ -68,7 +69,9 @@ public enum TokenKind {
   DEDENT("dedent"),
   PASS("pass"),
   PERCENT("%"),
+  AMPERSAND("&"),
   PIPE("|"),
+  CARET("^"),
   PLUS("+"),
   PLUS_EQUALS("+="),
   MINUS_EQUALS("-="),
@@ -76,6 +79,11 @@ public enum TokenKind {
   SLASH_EQUALS("/="),
   SLASH_SLASH_EQUALS("//="),
   PERCENT_EQUALS("%="),
+  AMPERSAND_EQUALS("&="),
+  PIPE_EQUALS("|="),
+  CARET_EQUALS("^="),
+  GREATER_GREATER_EQUALS(">>="),
+  LESS_LESS_EQUALS("<<="),
   RAISE("raise"),
   RBRACE("}"),
   RBRACKET("]"),
@@ -84,6 +92,8 @@ public enum TokenKind {
   SEMI(";"),
   SLASH("/"),
   SLASH_SLASH("//"),
+  GREATER_GREATER(">>"),
+  LESS_LESS("<<"),
   STAR("*"),
   STAR_STAR("**"),
   STRING("string"),
@@ -132,11 +142,16 @@ public enum TokenKind {
           PERCENT,
           SLASH,
           SLASH_SLASH,
+          GREATER_GREATER,
+          LESS_LESS,
           PLUS,
+          AMPERSAND,
           PIPE,
+          CARET,
           STAR);
 
   public static final ImmutableSet<TokenKind> AUGMENTED_ASSIGNMENT_OPS =
       ImmutableSet.of(
-          PLUS_EQUALS, MINUS_EQUALS, STAR_EQUALS, SLASH_EQUALS, SLASH_SLASH_EQUALS, PERCENT_EQUALS);
+          PLUS_EQUALS, MINUS_EQUALS, STAR_EQUALS, SLASH_EQUALS, SLASH_SLASH_EQUALS, PERCENT_EQUALS,
+              AMPERSAND_EQUALS, PIPE_EQUALS, CARET_EQUALS, GREATER_GREATER_EQUALS, LESS_LESS_EQUALS);
 }

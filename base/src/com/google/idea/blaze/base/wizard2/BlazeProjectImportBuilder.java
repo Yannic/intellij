@@ -15,6 +15,7 @@
  */
 package com.google.idea.blaze.base.wizard2;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.intellij.ide.util.projectWizard.ProjectBuilder;
 import com.intellij.openapi.module.ModifiableModuleModel;

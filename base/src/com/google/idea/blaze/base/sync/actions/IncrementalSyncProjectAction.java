@@ -16,6 +16,7 @@
 package com.google.idea.blaze.base.sync.actions;
 
 import com.google.idea.blaze.base.settings.Blaze;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeUserSettings;
 import com.google.idea.blaze.base.sync.BlazeSyncManager;
 import com.google.idea.blaze.base.sync.status.BlazeSyncStatus;
@@ -24,20 +25,40 @@ import com.intellij.notification.NotificationDisplayType;
 import com.intellij.notification.NotificationGroup;
 import com.intellij.notification.NotificationType;
 import com.intellij.notification.Notifications;
+import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.Presentation;
 import com.intellij.openapi.application.ApplicationNamesInfo;
 import com.intellij.openapi.project.Project;
 import icons.BlazeIcons;
+import javax.annotation.Nullable;
 import javax.swing.Icon;
 
-/** Syncs the project with BUILD files. */
+/**
+ * Syncs the project with BUILD files.
+ */
 public class IncrementalSyncProjectAction extends BlazeProjectSyncAction {
+
+  public static final String ID = "Blaze.IncrementalSyncProject";
 
   @Override
   protected void runSync(Project project, AnActionEvent e) {
-    BlazeSyncManager.getInstance(project)
-        .incrementalProjectSync(/* reason= */ "IncrementalSyncProjectAction");
+    doIncrementalSync(getClass(), project, e);
+  }
+
+  public static void doIncrementalSync(Class<?> klass, Project project, @Nullable AnActionEvent e) {
+    // This is a project type before we refreshed project view
+    ProjectType currentProjectType = Blaze.getProjectType(project);
+    // This is a project type after we reloaded project view and actualized it in BlazeImportSettings
+    ProjectType refreshedProjectType = Blaze.getUpToDateProjectTypeBeforeSync(project);
+    boolean projectTypeChanged = currentProjectType != refreshedProjectType;
+    if (projectTypeChanged) {
+      BlazeSyncManager.getInstance(project)
+          .fullProjectSync(/* reason= */ "FullSyncProjectAction");
+    } else {
+      BlazeSyncManager.getInstance(project)
+          .incrementalProjectSync(/* reason= */ "IncrementalSyncProjectAction");
+    }
   }
 
   @Override
@@ -49,9 +70,12 @@ public class IncrementalSyncProjectAction extends BlazeProjectSyncAction {
     Project project = e.getProject();
     Presentation presentation = e.getPresentation();
     BlazeSyncStatus statusHelper = BlazeSyncStatus.getInstance(project);
+    presentation.setEnabled(!statusHelper.syncInProgress());
+    if (Blaze.getProjectType(project) == ProjectType.QUERY_SYNC) {
+      return;
+    }
     BlazeSyncStatus.SyncStatus status = statusHelper.getStatus();
     presentation.setIcon(getIcon(status));
-    presentation.setEnabled(!statusHelper.syncInProgress());
 
     if (status == BlazeSyncStatus.SyncStatus.DIRTY
         && !BlazeUserSettings.getInstance().getSyncStatusPopupShown()) {
@@ -87,5 +111,16 @@ public class IncrementalSyncProjectAction extends BlazeProjectSyncAction {
             NotificationType.INFORMATION);
     notification.setImportant(true);
     Notifications.Bus.notify(notification, project);
+  }
+
+  @Override
+  protected QuerySyncStatus querySyncSupport() {
+    return QuerySyncStatus.SUPPORTED;
+  }
+
+  @Override
+  public ActionUpdateThread getActionUpdateThread() {
+    // Not clear what `showPopupNotification` does and why.
+    return ActionUpdateThread.EDT;
   }
 }

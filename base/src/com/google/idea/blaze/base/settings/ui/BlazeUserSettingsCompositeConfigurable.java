@@ -32,6 +32,8 @@ import java.util.Arrays;
 import java.util.List;
 import javax.swing.JComponent;
 import javax.swing.JPanel;
+import org.jetbrains.annotations.NonNls;
+import org.jetbrains.annotations.Nullable;
 
 /** Settings configurable combining settings from multiple nested configurables. */
 public class BlazeUserSettingsCompositeConfigurable
@@ -49,6 +51,7 @@ public class BlazeUserSettingsCompositeConfigurable
 
   public static final String ID = "blaze.view";
   private static final String DISPLAY_NAME = Blaze.defaultBuildSystemName() + " Settings";
+  private static final String HELP_TOPIC = "reference.bazel";
 
   @Override
   public String getId() {
@@ -58,6 +61,11 @@ public class BlazeUserSettingsCompositeConfigurable
   @Override
   public String getDisplayName() {
     return DISPLAY_NAME;
+  }
+
+  @Override
+  public @Nullable @NonNls String getHelpTopic() {
+    return HELP_TOPIC;
   }
 
   @Override

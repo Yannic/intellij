@@ -15,36 +15,37 @@
  */
 package com.google.idea.blaze.base.sync;
 
-import com.google.idea.blaze.base.model.BlazeProjectData;
-import com.google.idea.blaze.base.qsync.QuerySync;
-import com.google.idea.blaze.base.qsync.QuerySyncManager;
+import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
 import com.google.idea.blaze.base.settings.BlazeUserSettings;
 import com.google.idea.blaze.base.sync.data.BlazeProjectDataManager;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.startup.StartupActivity;
 
 /** Syncs the project upon startup. */
-public class BlazeSyncStartupActivity implements StartupActivity {
+public class BlazeSyncStartupActivity implements StartupActivity.DumbAware {
 
   public static final String SYNC_REASON = "BlazeSyncStartupActivity";
 
   @Override
   public void runActivity(Project project) {
+    // do not automatically start a sync during testing, this allows tests to
+    // manually start a sync and instrument the BlazeContext
+    if (ApplicationManager.getApplication().isUnitTestMode()) {
+      return;
+    }
+
     BlazeImportSettings importSettings =
         BlazeImportSettingsManager.getInstance(project).getImportSettings();
     if (importSettings == null) {
       return;
     }
-    if (QuerySync.isEnabled()) {
-      // When query sync is not enabled hasProjectData triggers the load
-      BlazeProjectData unused =
-          BlazeProjectDataManager.getInstance(project).loadProject(importSettings);
-      QuerySyncManager.getInstance(project).initialProjectSync();
-      return;
-    }
-    if (hasProjectData(project, importSettings)) {
+    ProjectType initialProjectType = importSettings.getProjectType();
+    ProjectType currentProjectType = Blaze.getUpToDateProjectTypeBeforeSync(project);
+    if (initialProjectType == currentProjectType && hasProjectData(project, importSettings)) {
       BlazeSyncManager.getInstance(project).requestProjectSync(startupSyncParams());
     } else {
       BlazeSyncManager.getInstance(project).incrementalProjectSync(SYNC_REASON);
@@ -61,7 +62,6 @@ public class BlazeSyncStartupActivity implements StartupActivity {
         .setSyncMode(SyncMode.STARTUP)
         .setSyncOrigin(SYNC_REASON)
         .setAddProjectViewTargets(true)
-        .setAddWorkingSet(BlazeUserSettings.getInstance().getExpandSyncToWorkingSet())
         .build();
   }
 }

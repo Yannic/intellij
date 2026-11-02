@@ -27,6 +27,7 @@ import com.google.idea.blaze.base.sync.workspace.ArtifactLocationDecoder;
 import com.google.idea.blaze.base.sync.workspace.ArtifactLocationDecoderImpl;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolver;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolverImpl;
+
 import java.io.File;
 
 /**
@@ -45,6 +46,7 @@ public class MockBlazeProjectDataBuilder {
   private WorkspacePathResolver workspacePathResolver;
   private ArtifactLocationDecoder artifactLocationDecoder;
   private WorkspaceLanguageSettings workspaceLanguageSettings;
+  private ExternalWorkspaceData externalWorkspaceData;
   private SyncState syncState;
 
   private MockBlazeProjectDataBuilder(WorkspaceRoot workspaceRoot) {
@@ -105,6 +107,13 @@ public class MockBlazeProjectDataBuilder {
   }
 
   @CanIgnoreReturnValue
+  public MockBlazeProjectDataBuilder setExternalWorkspaceData(
+      ExternalWorkspaceData externalWorkspaceData) {
+    this.externalWorkspaceData = externalWorkspaceData;
+    return this;
+  }
+
+  @CanIgnoreReturnValue
   public MockBlazeProjectDataBuilder setSyncState(SyncState syncState) {
     this.syncState = syncState;
     return this;
@@ -119,10 +128,9 @@ public class MockBlazeProjectDataBuilder {
       blazeInfo =
           BlazeInfo.createMockBlazeInfo(
               outputBase,
-              outputBase + "/execroot",
-              outputBase + "/execroot/bin",
-              outputBase + "/execroot/gen",
-              outputBase + "/execroot/testlogs");
+              outputBase + "/execroot/_main",
+              outputBase + "/execroot/_main/bin",
+              outputBase + "/execroot/_main/gen");
     }
     BlazeVersionData blazeVersionData =
         this.blazeVersionData != null ? this.blazeVersionData : BlazeVersionData.builder().build();
@@ -142,14 +150,22 @@ public class MockBlazeProjectDataBuilder {
     SyncState syncState =
         this.syncState != null ? this.syncState : new SyncState(ImmutableMap.of());
 
-    return new AspectSyncProjectData(
-        new ProjectTargetData(
-            targetMap, /* ideInterfaceState= */ null, RemoteOutputArtifacts.EMPTY),
-        blazeInfo,
-        blazeVersionData,
-        workspacePathResolver,
-        artifactLocationDecoder,
-        workspaceLanguageSettings,
-        syncState);
+    ExternalWorkspaceData externalWorkspaceData =
+        this.externalWorkspaceData != null
+            ? this.externalWorkspaceData
+            : ExternalWorkspaceData.EMPTY;
+
+    return BlazeProjectData.builder()
+        .targetData(new ProjectTargetData(
+            targetMap, /* ideInterfaceState= */ null, RemoteOutputArtifacts.EMPTY))
+        .blazeInfo(blazeInfo)
+        .blazeVersionData(blazeVersionData)
+        .workspacePathResolver(workspacePathResolver)
+        .artifactLocationDecoder(artifactLocationDecoder)
+        .workspaceLanguageSettings(workspaceLanguageSettings)
+        .externalWorkspaceData(externalWorkspaceData)
+        .syncState(syncState)
+        .configurationData(BlazeConfigurationData.EMPTY)
+        .build();
   }
 }

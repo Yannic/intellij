@@ -64,19 +64,19 @@ class BlazeWebTestLocator implements SMTestLocator {
       return ImmutableList.of();
     }
     TargetIdeInfo wrapperTarget =
-        projectData.getTargetMap().get(TargetKey.forPlainTarget(wrapperLabel));
+        projectData.targetMap().get(TargetKey.forPlainTarget(wrapperLabel));
     if (wrapperTarget == null) {
       return ImmutableList.of();
     }
     ImmutableList.Builder<Location> builder = ImmutableList.builder();
     for (Dependency dependency : wrapperTarget.getDependencies()) {
       TargetKey targetKey = dependency.getTargetKey();
-      TargetIdeInfo target = projectData.getTargetMap().get(targetKey);
+      TargetIdeInfo target = projectData.targetMap().get(targetKey);
       if (target == null) {
         continue;
       }
       Kind kind = target.getKind();
-      Label label = targetKey.getLabel();
+      Label label = targetKey.label();
       if (Stream.of("_wrapped_test", "_debug").noneMatch(label.targetName().toString()::endsWith)) {
         continue;
       }

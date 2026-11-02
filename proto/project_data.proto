@@ -21,8 +21,8 @@ syntax = "proto3";
 package blaze;
 
 import "third_party/bazel/src/main/protobuf/build.proto";
-import "proto/common.proto";
-import "proto/intellij_ide_info.proto";
+import "sdk/proto/common.proto";
+import "sdk/proto/ide_info.proto";
 
 // option java_api_version = 2;
 option java_package = "com.google.devtools.intellij.model";
@@ -47,6 +47,19 @@ message BlazeVersionData {
   BazelVersion bazel_version = 3;
 }
 
+message BlazeConfiguration {
+  string id = 1;
+  string mnemonic = 2;
+  string platform_name = 3;
+  string cpu = 4;
+  bool is_tool = 6;
+}
+
+message BlazeConfigurationData {
+  // Map from configuration ID (full hash) to configuration details
+  map<string, BlazeConfiguration> configurations = 1;
+}
+
 message WorkspacePathResolver {
   string workspace_root = 1;
   string read_only_workspace_root = 2;
@@ -68,48 +81,6 @@ message BlazeSourceDirectory {
 message BlazeContentEntry {
   string content_root = 1;
   repeated BlazeSourceDirectory sources = 2;
-}
-
-message EmptyJarTracker {
-  message Entry {
-    LocalFileOrOutputArtifact artifact = 1;
-    bool is_empty = 2;
-  }
-  repeated Entry entries = 1;
-}
-
-message BlazeJavaImportResult {
-  repeated BlazeContentEntry content_entries = 1;
-  map<string, BlazeLibrary> libraries = 2;
-  repeated ArtifactLocation build_output_jars = 3;
-  repeated ArtifactLocation java_source_files = 4;
-  string source_version = 5;
-  EmptyJarTracker empty_jar_tracker = 6;
-  // this field has been deprecated due to field type change, use
-  // plugin_processor_jar_artifacts instead
-  repeated BlazeLibrary plugin_processor_jars = 7 [deprecated = true];
-  repeated ArtifactLocation plugin_processor_jar_artifacts = 8;
-}
-
-message BlazeJavaSyncData {
-  BlazeJavaImportResult import_result = 1;
-  repeated string excluded_libraries = 2;
-}
-
-message TargetToJdepsMap {
-  message Entry {
-    TargetKey key = 1;
-    repeated string value = 2;
-    LocalFileOrOutputArtifact file = 3;
-  }
-  repeated Entry entries = 1;
-}
-
-message JdepsState {
-  reserved 1;
-  map<string, TargetKey> file_to_target = 2 [deprecated = true];
-  TargetToJdepsMap target_to_jdeps = 3;
-  repeated LocalFileOrOutputArtifact jdeps_files = 4 [deprecated = true];
 }
 
 message LanguageSpecResult {
@@ -145,8 +116,8 @@ message LocalFile {
 
 // an output artifact not necessarily available on the local file system
 message OutputArtifact {
-  // the blaze-out-relative path of this artifact
-  string relative_path = 1;
+  // Depecated: artifact_path is used instead. The blaze-out-relative path of this artifact
+  string relative_path = 1 [deprecated = true];
   // a string uniquely identifying this artifact. May be used to
   // retrieve it from a remote caching service
   string id = 2;
@@ -154,6 +125,16 @@ message OutputArtifact {
   // synced. Used to choose between artifacts with the same path but different
   // IDs artifacts from a more recently-started sync will take priority
   int64 sync_start_time_millis = 3;
+  int64 file_length = 4;
+  // The digest of the artifact file; using the build tool's configured digest
+  // algorithm. It represents the content of the file and can be used to detect
+  // whether the content has changed.
+  string digest = 5;
+  // The artifact path as returned by Bazel/s File.path (i.e. includes prefixes like bazel-out if present and maybe an absolute path).
+  // Components of this path should not be inspected individually (except the file name).
+  string artifact_path = 6;
+  // The length of the artifact prefix like `bazel-out/k8/bin`.
+  int32 prefix_length_plus_one = 7; // +1 to differentiate from the default.
 }
 
 message AndroidResourceModule {
@@ -167,51 +148,8 @@ message AndroidResourceModule {
   repeated TargetKey source_target_keys = 6;
 }
 
-message BlazeJarLibrary {
-  LibraryArtifact library_artifact = 1;
-  TargetKey target_key = 2;
-}
-
-message AarLibrary {
-  LibraryArtifact library_artifact = 1;
-  ArtifactLocation aar_artifact = 2;
-  string resource_package = 3;
-}
-
-message BlazeResourceLibrary {
-  repeated ArtifactLocation sources = 1;  // removed in 3.3
-  ArtifactLocation root = 2;
-  ArtifactLocation manifest = 3;
-  repeated string resources = 4;
-}
-
 message BlazeLibrary {
   string library_key = 1;
-  oneof subclass {
-    BlazeJarLibrary blaze_jar_library = 2;
-    AarLibrary aar_library = 3;
-    BlazeResourceLibrary blaze_resource_library = 4;
-  }
-}
-
-message BlazeAndroidImportResult {
-  repeated AndroidResourceModule android_resource_modules = 1;
-  repeated BlazeLibrary resource_libraries = 2;  // single in 3.2
-  ArtifactLocation javac_jar = 3 [deprecated = true];
-  repeated BlazeLibrary aar_libraries = 4;
-  repeated ArtifactLocation javac_jars = 5 [deprecated = true];
-  repeated BlazeLibrary javac_jar_libraries = 6;
-  repeated BlazeLibrary resource_jars = 7;
-}
-
-message AndroidSdkPlatform {
-  string android_sdk = 1;
-  int32 android_min_sdk_level = 2;
-}
-
-message BlazeAndroidSyncData {
-  BlazeAndroidImportResult import_result = 1;
-  AndroidSdkPlatform android_sdk_platform = 2;
 }
 
 message RemoteOutputArtifacts {
@@ -225,14 +163,18 @@ message TargetData {
 }
 
 message SyncState {
-  BlazeJavaSyncData blaze_java_sync_data = 1;
-  BlazeAndroidSyncData blaze_android_sync_data = 2;
-  // reusing BlazeJavaSyncData, since it's a subset
-  BlazeJavaSyncData blaze_scala_sync_data = 3;
   LanguageSpecResult language_spec_result = 4;
-  JdepsState jdeps_state = 5;
   BlazeIdeInterfaceState blaze_ide_interface_state = 6 [deprecated = true];
   RemoteOutputArtifacts remote_output_artifacts = 7 [deprecated = true];
+}
+
+message ExternalWorkspace {
+  string name = 1;
+  string repo_name = 2;
+}
+
+message ExternalWorkspaceData {
+  repeated ExternalWorkspace workspaces = 1;
 }
 
 message BlazeProjectData {
@@ -244,4 +186,6 @@ message BlazeProjectData {
   WorkspaceLanguageSettings workspace_language_settings = 6;
   SyncState sync_state = 7;
   TargetData target_data = 8;
+  ExternalWorkspaceData external_workspace_data = 9;
+  BlazeConfigurationData configuration_data = 10;
 }

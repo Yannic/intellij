@@ -26,6 +26,7 @@ import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.idea.blaze.base.async.FutureUtil;
 import com.google.idea.blaze.base.bazel.BuildSystem.BuildInvoker;
+import com.google.idea.blaze.base.command.buildresult.BuildResult;
 import com.google.idea.blaze.base.logging.utils.ShardStats;
 import com.google.idea.blaze.base.logging.utils.ShardStats.ShardingApproach;
 import com.google.idea.blaze.base.model.primitives.TargetExpression;
@@ -33,7 +34,6 @@ import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.output.IssueOutput;
 import com.google.idea.blaze.base.scope.output.StatusOutput;
 import com.google.idea.blaze.base.settings.Blaze;
-import com.google.idea.blaze.base.sync.aspects.BuildResult;
 import com.google.idea.common.experiments.IntExperiment;
 import com.intellij.openapi.project.Project;
 import com.intellij.util.concurrency.AppExecutorUtil;
@@ -90,14 +90,16 @@ public class ShardedTargetList {
       BlazeContext context,
       Function<Integer, String> progressMessage,
       Function<List<? extends TargetExpression>, BuildResult> invocation,
-      BuildInvoker binary) {
+      BuildInvoker binary,
+      boolean invokeParallel) {
     if (isEmpty()) {
       return BuildResult.SUCCESS;
     }
     if (shardedTargets.size() == 1) {
       return invocation.apply(shardedTargets.get(0));
     }
-    if (binary.supportsParallelism()) {
+    if (binary.getCapabilities().contains(BuildInvoker.Capability.BUILD_PARALLEL_SHARDS)
+        && invokeParallel) {
       return runInParallel(project, context, invocation);
     }
     int progress = 0;
@@ -119,6 +121,7 @@ public class ShardedTargetList {
     return output;
   }
 
+  @SuppressWarnings("Interruption")
   private BuildResult runInParallel(
       Project project,
       BlazeContext context,

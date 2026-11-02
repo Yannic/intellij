@@ -19,37 +19,49 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.base.Joiner;
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
+import com.google.common.io.CharStreams;
 import com.google.common.util.concurrent.Futures;
-import com.google.idea.blaze.base.async.process.ExternalTask;
-import com.google.idea.blaze.base.async.process.LineProcessingOutputStream;
-import com.google.idea.blaze.base.bazel.BuildSystem.BuildInvoker;
+import com.google.errorprone.annotations.MustBeClosed;
+import com.google.idea.blaze.base.buildview.BazelExecService;
+import com.google.idea.blaze.base.buildview.ExecResult;
 import com.google.idea.blaze.base.command.BlazeCommand;
 import com.google.idea.blaze.base.command.BlazeCommandName;
 import com.google.idea.blaze.base.command.BlazeInvocationContext.ContextType;
 import com.google.idea.blaze.base.model.primitives.Label;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
-import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.query.BlazeQueryLabelKindParser;
 import com.google.idea.blaze.base.query.BlazeQueryOutputBaseProvider;
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.Scope;
 import com.google.idea.blaze.base.scope.scopes.IdeaLogScope;
-import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.sync.workspace.WorkspaceHelper;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolver;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolverProvider;
 import com.google.idea.blaze.common.PrintOutput;
+import com.google.idea.blaze.exception.BuildException;
 import com.google.idea.common.experiments.BoolExperiment;
+import com.intellij.execution.ExecutionException;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
-import java.io.ByteArrayOutputStream;
+import com.intellij.util.ObjectUtils;
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Future;
 import javax.annotation.Nullable;
+
+import com.intellij.openapi.util.registry.Registry;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.ide.PooledThreadExecutor;
 
 /**
@@ -76,11 +88,18 @@ public class BlazeQuerySourceToTargetProvider implements SourceToTargetProvider 
 
   /** Prefix to identify targets connected to Kotlin macros */
   public static final String KOTLIN_MACRO_PREFIX = "kt_";
+
   /** Suffix to identify Kotlin source files */
   public static final String KOTLIN_FILE_SUFFIX = ".kt";
 
   /** Exception thrown while querying targets for a source file */
-  public static class BlazeQuerySourceToTargetException extends Exception {}
+  public static class BlazeQuerySourceToTargetException extends Exception {
+    public BlazeQuerySourceToTargetException(String message, Throwable cause) {
+      super(message, cause);
+    }
+  }
+
+  static Logger logger = Logger.getInstance(BlazeQuerySourceToTargetProvider.class);
 
   @Override
   public Future<List<TargetInfo>> getTargetsBuildingSourceFile(
@@ -151,6 +170,7 @@ public class BlazeQuerySourceToTargetProvider implements SourceToTargetProvider 
             .allMatch(kind -> kind.startsWith(KOTLIN_MACRO_PREFIX));
   }
 
+  @Nullable
   private static ImmutableList<TargetInfo> runDirectRdepsQuery(
       Project project, Collection<Label> sources, BlazeContext context, ContextType type)
       throws BlazeQuerySourceToTargetException {
@@ -160,23 +180,10 @@ public class BlazeQuerySourceToTargetProvider implements SourceToTargetProvider 
     // quote labels to handle punctuation in file names
     String expr = "\"" + Joiner.on("\"+\"").join(sources) + "\"";
     String directRdepsQuery = String.format("same_pkg_direct_rdeps(%s)", expr);
-    BlazeCommand command =
-        getBlazeCommand(
-            project, type, directRdepsQuery, ImmutableList.of("--output=label_kind"), context);
-    BlazeQueryLabelKindParser blazeQueryLabelKindParser = new BlazeQueryLabelKindParser(t -> true);
-    ByteArrayOutputStream stderr = new ByteArrayOutputStream();
-    int retVal =
-        ExternalTask.builder(WorkspaceRoot.fromProject(project))
-            .addBlazeCommand(command)
-            .context(context)
-            .stdout(LineProcessingOutputStream.of(blazeQueryLabelKindParser))
-            .stderr(stderr)
-            .build()
-            .run();
-    checkForErrors(context, command, stderr, retVal);
-    return blazeQueryLabelKindParser.getTargets();
+    return getTargetInfoList(project, context, type, directRdepsQuery);
   }
 
+  @Nullable
   private static ImmutableList<TargetInfo> runRecursiveRdepsQuery(
       Project project, Collection<Label> sources, BlazeContext context, ContextType type)
       throws BlazeQuerySourceToTargetException {
@@ -184,84 +191,104 @@ public class BlazeQuerySourceToTargetProvider implements SourceToTargetProvider 
     String packageName = getPackageName(project, context, type, expr);
     String rdepsQuery =
         String.format("kind(\".*_test\", rdeps(%s:all, %s, 2))", packageName, sources.toArray()[0]);
-    // TODO(b/259555274): Re-enable graphless mode once blaze team improves the query performance
-    BlazeCommand command =
-        getBlazeCommand(
-            project,
-            type,
-            rdepsQuery,
-            ImmutableList.of("--output=label_kind", "--experimental_graphless_query=no"),
-            context);
-    BlazeQueryLabelKindParser blazeQueryLabelKindParser = new BlazeQueryLabelKindParser(t -> true);
-    ByteArrayOutputStream stderr = new ByteArrayOutputStream();
-    int retVal =
-        ExternalTask.builder(WorkspaceRoot.fromProject(project))
-            .addBlazeCommand(command)
-            .context(context)
-            .stdout(LineProcessingOutputStream.of(blazeQueryLabelKindParser))
-            .stderr(stderr)
-            .build()
-            .run();
-    checkForErrors(context, command, stderr, retVal);
-    return blazeQueryLabelKindParser.getTargets();
+    return getTargetInfoList(project, context, type, rdepsQuery);
   }
 
-  private static String getPackageName(
-      Project project, BlazeContext context, ContextType type, String expr)
-      throws BlazeQuerySourceToTargetException {
-    BlazeCommand command =
-        getBlazeCommand(project, type, expr, ImmutableList.of("--output=package"), context);
-    ByteArrayOutputStream stdout = new ByteArrayOutputStream();
-    ByteArrayOutputStream stderr = new ByteArrayOutputStream();
-    int retVal =
-        ExternalTask.builder(WorkspaceRoot.fromProject(project))
-            .addBlazeCommand(command)
-            .context(context)
-            .stdout(stdout)
-            .stderr(stderr)
-            .build()
-            .run();
-    checkForErrors(context, command, stderr, retVal);
-    return stdout.toString(UTF_8).trim();
-  }
+  @Nullable
+  private static ImmutableList<TargetInfo> getTargetInfoList(
+      Project project,
+      BlazeContext context,
+      ContextType type,
+      String rdepsQuery
+  ) throws BlazeQuerySourceToTargetException {
+    final var queryFile = prepareQueryFile(project, rdepsQuery);
+    final var command = getBlazeCommandBuilder(
+        /* project = */ project,
+        /* type = */ type,
+        /* query = */ "--query_file=" + queryFile.toAbsolutePath(),
+        /* additionalBlazeFlags = */ ImmutableList.of("--output=label_kind")
+    );
 
-  private static void checkForErrors(
-      BlazeContext context, BlazeCommand command, ByteArrayOutputStream stderr, int retVal)
-      throws BlazeQuerySourceToTargetException {
-    // exit code of 3 represents a potentially expected, non-fatal error
-    // only display error output for non-3 exit code, when there's an unexpected error
-    if (retVal != 0 && retVal != 3) {
-      // the command would have been logged previously, but that would be truncated
-      // logging it again for easier repro from logs without blowing up the log size
-      context.output(PrintOutput.output("Failed to execute: " + command));
-      context.output(PrintOutput.output("Query command returned: " + retVal));
-      Splitter.on('\n')
-          .split(stderr.toString())
-          .forEach(line -> context.output(PrintOutput.output(line)));
-      throw new BlazeQuerySourceToTargetException();
+    try (final var result = BazelExecService.of(project).exec(context, command)) {
+      result.throwOnFailure();
+
+      final var blazeQueryLabelKindParser = new BlazeQueryLabelKindParser(t -> true);
+
+      new BufferedReader(new InputStreamReader(result.getStdout(), UTF_8))
+          .lines()
+          .forEach(blazeQueryLabelKindParser::processLine);
+
+      return blazeQueryLabelKindParser.getTargets();
+    } catch (ExecutionException | BuildException e) {
+      throw new BlazeQuerySourceToTargetException("Failed to get target info list", e);
+    } finally {
+      if (!Registry.is("bazel.sync.keep.query.files")) {
+        try {
+          Files.deleteIfExists(queryFile);
+        } catch (IOException e) {
+          logger.error("Failed to delete query file", e);
+        }
+      }
     }
   }
 
-  private static BlazeCommand getBlazeCommand(
+  private static @NotNull Path prepareQueryFile(Project project, String rdepsQuery) throws BlazeQuerySourceToTargetException {
+    Path queryFile = null;
+    try {
+      Path queriesDir = Paths.get(project.getBasePath()).resolve("queries");
+      Files.createDirectories(queriesDir);
+      queryFile = Files.createTempFile(queriesDir, "query-", "");
+      Files.writeString(queryFile, rdepsQuery, StandardOpenOption.WRITE);
+    } catch (IOException e) {
+      if (queryFile != null) {
+        try {
+          Files.deleteIfExists(queryFile);
+        } catch (IOException ex) {
+          throw new BlazeQuerySourceToTargetException("Couldn't delete file after creation failure", e);
+        }
+      }
+      throw new BlazeQuerySourceToTargetException("Couldn't create query file", e);
+    }
+    return queryFile;
+  }
+
+  @Nullable
+  private static String getPackageName(
+      Project project,
+      BlazeContext context,
+      ContextType type, String expr
+  ) throws BlazeQuerySourceToTargetException {
+    final var command = getBlazeCommandBuilder(
+        /* project = */ project,
+        /* type = */ type,
+        /* query = */ expr,
+        /* additionalBlazeFlags = */ ImmutableList.of("--output=package")
+    );
+
+    try (final var result = BazelExecService.of(project).exec(context, command)) {
+      result.throwOnFailure();
+      return CharStreams.toString(new InputStreamReader(result.getStdout(), UTF_8)).trim();
+    } catch (ExecutionException | BuildException | IOException e) {
+      final var cause = ObjectUtils.coalesce(e.getCause(), e);
+      context.output(PrintOutput.log(String.format("Failed to execute blaze query: %s", cause.getMessage())));
+      throw new BlazeQuerySourceToTargetException(e.getCause().getMessage(), e);
+    }
+  }
+
+  private static BlazeCommand.Builder getBlazeCommandBuilder(
       Project project,
       ContextType type,
       String query,
-      List<String> additionalBlazeFlags,
-      BlazeContext context) {
+      List<String> additionalBlazeFlags) {
     // never use a custom output base for queries during sync
-    String outputBaseFlag =
-        type == ContextType.Sync
-            ? null
-            : BlazeQueryOutputBaseProvider.getInstance(project).getOutputBaseFlag();
-    BuildInvoker buildInvoker =
-        Blaze.getBuildSystemProvider(project).getBuildSystem().getDefaultInvoker(project, context);
-    return BlazeCommand.builder(buildInvoker, BlazeCommandName.QUERY)
+    final var outputBaseFlag = type == ContextType.Sync
+        ? null
+        : BlazeQueryOutputBaseProvider.getInstance(project).getOutputBaseFlag();
+    return BlazeCommand.builder(BlazeCommandName.QUERY)
         .addBlazeFlags(additionalBlazeFlags)
         .addBlazeFlags("--keep_going")
         .addBlazeFlags(query)
-        .addBlazeStartupFlags(
-            outputBaseFlag == null ? ImmutableList.of() : ImmutableList.of(outputBaseFlag))
-        .build();
+        .addBlazeStartupFlags(outputBaseFlag == null ? ImmutableList.of() : ImmutableList.of(outputBaseFlag));
   }
 
   /**

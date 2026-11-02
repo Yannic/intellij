@@ -20,6 +20,8 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.idea.blaze.base.ideinfo.CToolchainIdeInfo;
 
+import java.nio.file.Path;
+import java.util.Optional;
 import javax.annotation.concurrent.Immutable;
 import java.io.File;
 import java.util.Map;
@@ -33,18 +35,18 @@ final class BlazeConfigurationResolverResult {
   private final ImmutableMap<BlazeResolveConfigurationData, BlazeResolveConfiguration>
       uniqueResolveConfigurations;
   private final ImmutableMap<CToolchainIdeInfo, BlazeCompilerSettings> compilerSettings;
-  private final ImmutableSet<File> validHeaderRoots;
-  private final ImmutableMap<String, String> targetToCompilerVersion;
+  private final ImmutableSet<Path> validHeaderRoots;
+  private final Optional<XcodeCompilerSettings> xcodeProperties;
 
   private BlazeConfigurationResolverResult(
       ImmutableMap<BlazeResolveConfigurationData, BlazeResolveConfiguration> uniqueResolveConfigurations,
       ImmutableMap<CToolchainIdeInfo, BlazeCompilerSettings> compilerSettings,
-      ImmutableSet<File> validHeaderRoots,
-      ImmutableMap<String, String> targetToCompilerVersion) {
+      ImmutableSet<Path> validHeaderRoots,
+      Optional<XcodeCompilerSettings> xcodeProperties) {
     this.uniqueResolveConfigurations = uniqueResolveConfigurations;
     this.compilerSettings = compilerSettings;
     this.validHeaderRoots = validHeaderRoots;
-    this.targetToCompilerVersion = targetToCompilerVersion;
+    this.xcodeProperties = xcodeProperties;
   }
 
   static Builder builder() {
@@ -67,8 +69,12 @@ final class BlazeConfigurationResolverResult {
     return compilerSettings;
   }
 
+  public Optional<XcodeCompilerSettings> getXcodeProperties() {
+    return xcodeProperties;
+  }
+
   boolean isValidHeaderRoot(File absolutePath) {
-    return validHeaderRoots.contains(absolutePath);
+    return validHeaderRoots.contains(absolutePath.toPath());
   }
 
   boolean isEquivalentConfigurations(BlazeConfigurationResolverResult other) {
@@ -80,29 +86,27 @@ final class BlazeConfigurationResolverResult {
       BlazeResolveConfiguration config = mapEntry.getValue();
       BlazeResolveConfiguration otherConfig =
           other.uniqueResolveConfigurations.get(mapEntry.getKey());
-      if (otherConfig == null || !config.isEquivalentConfigurations(otherConfig)) {
+      if (!config.equals(otherConfig)) {
         return false;
       }
     }
-    return validHeaderRoots.equals(other.validHeaderRoots);
-  }
-
-  public ImmutableMap<String, String> getTargetToCompilerVersion() {
-    return targetToCompilerVersion;
+    return validHeaderRoots.equals(other.validHeaderRoots) &&
+        xcodeProperties.equals(other.xcodeProperties);
   }
 
   static class Builder {
     ImmutableMap<BlazeResolveConfigurationData, BlazeResolveConfiguration> uniqueConfigurations =
         ImmutableMap.of();
     ImmutableMap<CToolchainIdeInfo, BlazeCompilerSettings> compilerSettings = ImmutableMap.of();
-    ImmutableSet<File> validHeaderRoots = ImmutableSet.of();
-    private ImmutableMap<String, String> setTargetToVersionMap;
+    ImmutableSet<Path> validHeaderRoots = ImmutableSet.of();
+    Optional<XcodeCompilerSettings> xcodeSettings = Optional.empty();
 
     public Builder() {}
 
     BlazeConfigurationResolverResult build() {
       return new BlazeConfigurationResolverResult(
-          uniqueConfigurations, compilerSettings, validHeaderRoots, setTargetToVersionMap);
+          uniqueConfigurations, compilerSettings, validHeaderRoots,
+          xcodeSettings);
     }
 
     void setUniqueConfigurations(
@@ -116,12 +120,13 @@ final class BlazeConfigurationResolverResult {
       this.compilerSettings = compilerSettings;
     }
 
-    void setValidHeaderRoots(ImmutableSet<File> validHeaderRoots) {
+    void setValidHeaderRoots(ImmutableSet<Path> validHeaderRoots) {
       this.validHeaderRoots = validHeaderRoots;
     }
 
-    public void setTargetToVersionMap(ImmutableMap<String, String> targetToVersionMap) {
-      this.setTargetToVersionMap = targetToVersionMap;
+    public void setXcodeSettings(
+        Optional<XcodeCompilerSettings> xcodeSettings) {
+      this.xcodeSettings = xcodeSettings;
     }
   }
 }

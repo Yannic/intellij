@@ -22,6 +22,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Sets.SetView;
 import com.google.idea.blaze.base.async.executor.ProgressiveTaskWithProgressIndicator;
+import com.google.idea.blaze.base.buildview.BuildViewMigration;
+import com.google.idea.blaze.base.buildview.BuildViewScope;
 import com.google.idea.blaze.base.command.BlazeInvocationContext.ContextType;
 import com.google.idea.blaze.base.ideinfo.TargetKey;
 import com.google.idea.blaze.base.issueparser.BlazeIssueParser;
@@ -40,6 +42,7 @@ import com.google.idea.blaze.base.scope.scopes.ProgressIndicatorScope;
 import com.google.idea.blaze.base.scope.scopes.ToolWindowScope;
 import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.settings.BlazeImportSettings;
+import com.google.idea.blaze.base.settings.BlazeImportSettings.ProjectType;
 import com.google.idea.blaze.base.settings.BlazeImportSettingsManager;
 import com.google.idea.blaze.base.settings.BlazeUserSettings;
 import com.google.idea.blaze.base.settings.BlazeUserSettings.FocusBehavior;
@@ -54,13 +57,13 @@ import com.google.idea.blaze.common.Context;
 import com.google.idea.blaze.common.PrintOutput;
 import com.google.idea.blaze.common.PrintOutput.OutputType;
 import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.components.ServiceManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.startup.StartupManager;
 import com.intellij.openapi.util.text.StringUtil;
+
 import java.util.Collection;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -79,10 +82,10 @@ public class BlazeSyncManager {
   }
 
   public static BlazeSyncManager getInstance(Project project) {
-    return ServiceManager.getService(project, BlazeSyncManager.class);
+    return project.getService(BlazeSyncManager.class);
   }
 
-  public static void printAndLogError(String errorMessage, Context context) {
+  public static void printAndLogError(String errorMessage, Context<?> context) {
     context.output(PrintOutput.error(errorMessage));
     logger.error(errorMessage);
   }
@@ -102,13 +105,6 @@ public class BlazeSyncManager {
       throw new IllegalStateException(
           String.format("Attempt to sync non-%s project.", Blaze.buildSystemName(project)));
     }
-    if (importSettings.getProjectProtoFile() != null) {
-      NewSync newSync = NewSync.getNewSync();
-      if (newSync != null) {
-        newSync.run(project, importSettings);
-        return;
-      }
-    }
 
     // an additional call to 'sync started'. This disables the sync actions while we wait for
     // 'runWhenSmart'
@@ -118,10 +114,16 @@ public class BlazeSyncManager {
             () -> {
               Future<Void> unusedFuture =
                   ProgressiveTaskWithProgressIndicator.builder(project, "Initiating project sync")
+                      .setModality(BuildViewMigration.progressModality())
                       .submitTask(
                           indicator ->
                               Scope.root(
                                   context -> {
+                                    if (BuildViewMigration.getEnabled()) {
+                                      context.push(BuildViewScope.forSync(project,
+                                          getRootInvocationTitle(syncParams)));
+                                    }
+
                                     context
                                         .push(new ProgressIndicatorScope(indicator))
                                         .push(buildToolWindowScope(syncParams, indicator))
@@ -130,6 +132,7 @@ public class BlazeSyncManager {
                                                 project,
                                                 BlazeUserSettings.getInstance()
                                                     .getShowProblemsViewOnSync()));
+
                                     if (!runInitialDirectoryOnlySync(syncParams)) {
                                       executeTask(project, syncParams, context);
                                       return;
@@ -144,7 +147,7 @@ public class BlazeSyncManager {
                                     try {
                                       projectState =
                                           ProjectStateSyncTask.collectProjectState(
-                                              project, context);
+                                              project, context, syncParams);
                                     } catch (SyncCanceledException | SyncFailedException e) {
                                       ApplicationManager.getApplication()
                                           .invokeLater(
@@ -196,7 +199,7 @@ public class BlazeSyncManager {
     SetView<LanguageClass> newLanguages =
         Sets.difference(
             projectState.getLanguageSettings().getActiveLanguages(),
-            oldProjectData.getWorkspaceLanguageSettings().getActiveLanguages());
+            oldProjectData.workspaceLanguageSettings().getActiveLanguages());
     // Don't care if languages are removed from project view because the corresponding targets will
     // be removed from the targetMap anyway at the end of the sync
     if (newLanguages.isEmpty()) {
@@ -228,20 +231,22 @@ public class BlazeSyncManager {
     }
   }
 
-  private Task getRootInvocationTask(BlazeSyncParams params) {
-    String taskTitle;
+  private String getRootInvocationTitle(BlazeSyncParams params) {
     if (params.syncMode() == SyncMode.STARTUP) {
-      taskTitle = "Startup Sync";
+      return "Startup Sync";
     } else if (params.syncOrigin().equals(BlazeSyncStartupActivity.SYNC_REASON)) {
-      taskTitle = "Importing " + project.getName();
+      return "Importing " + project.getName();
     } else if (params.syncMode() == SyncMode.PARTIAL) {
-      taskTitle = "Partial Sync";
+      return "Partial Sync";
     } else if (params.syncMode() == SyncMode.FULL) {
-      taskTitle = "Non-Incremental Sync";
+      return "Non-Incremental Sync";
     } else {
-      taskTitle = "Incremental Sync";
+      return "Incremental Sync";
     }
-    return new Task(project, taskTitle, Task.Type.SYNC);
+  }
+
+  private Task getRootInvocationTask(BlazeSyncParams params) {
+    return new Task(project, getRootInvocationTitle(params), Task.Type.SYNC);
   }
 
   private BlazeScope buildToolWindowScope(BlazeSyncParams syncParams, ProgressIndicator indicator) {
@@ -285,7 +290,6 @@ public class BlazeSyncManager {
             .setSyncMode(SyncMode.FULL)
             .setSyncOrigin(reason)
             .setAddProjectViewTargets(true)
-            .setAddWorkingSet(BlazeUserSettings.getInstance().getExpandSyncToWorkingSet())
             .build();
     requestProjectSync(syncParams);
   }
@@ -302,7 +306,6 @@ public class BlazeSyncManager {
             .setSyncMode(SyncMode.INCREMENTAL)
             .setSyncOrigin(reason)
             .setAddProjectViewTargets(true)
-            .setAddWorkingSet(BlazeUserSettings.getInstance().getExpandSyncToWorkingSet())
             .build();
     requestProjectSync(syncParams);
   }
@@ -363,22 +366,6 @@ public class BlazeSyncManager {
             .setSyncMode(SyncMode.NO_BUILD)
             .setSyncOrigin(reason)
             .setBackgroundSync(inBackground)
-            .build();
-    requestProjectSync(syncParams);
-  }
-
-  /**
-   * Runs a sync of the 'working set' (the locally modified files).
-   *
-   * @param reason a description of what triggered this sync
-   */
-  public void workingSetSync(String reason) {
-    BlazeSyncParams syncParams =
-        BlazeSyncParams.builder()
-            .setTitle("Sync Working Set")
-            .setSyncMode(SyncMode.PARTIAL)
-            .setSyncOrigin(reason)
-            .setAddWorkingSet(true)
             .build();
     requestProjectSync(syncParams);
   }

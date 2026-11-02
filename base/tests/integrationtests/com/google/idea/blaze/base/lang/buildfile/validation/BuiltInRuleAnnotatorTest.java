@@ -28,12 +28,13 @@ import com.google.idea.blaze.base.lang.buildfile.psi.BuildFile;
 import com.google.idea.blaze.base.lang.buildfile.psi.FuncallExpression;
 import com.google.idea.blaze.base.lang.buildfile.psi.util.PsiUtils;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
-import com.google.idea.sdkcompat.BaseSdkTestCompat;
 import com.intellij.lang.annotation.Annotation;
-import com.intellij.openapi.project.Project;
 import java.util.List;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
+
+import com.intellij.psi.PsiElement;
+import com.intellij.testFramework.fixtures.CodeInsightTestUtil;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -73,7 +74,7 @@ public class BuiltInRuleAnnotatorTest extends BuildFileIntegrationTestCase {
   @Before
   public final void before() {
     specProvider = new MockBuildLanguageSpecProvider();
-    registerApplicationService(BuildLanguageSpecProvider.class, specProvider);
+    registerProjectService(BuildLanguageSpecProvider.class, specProvider);
   }
 
   @Test
@@ -319,7 +320,7 @@ public class BuiltInRuleAnnotatorTest extends BuildFileIntegrationTestCase {
 
     @Nullable
     @Override
-    public BuildLanguageSpec getLanguageSpec(Project project) {
+    public BuildLanguageSpec getLanguageSpec() {
       return languageSpec;
     }
   }
@@ -340,7 +341,7 @@ public class BuiltInRuleAnnotatorTest extends BuildFileIntegrationTestCase {
   }
 
   private List<Annotation> validateFile(BuildFile file) {
-    return BaseSdkTestCompat.testAnnotator(
+    return CodeInsightTestUtil.testAnnotator(
         new BuiltInRuleAnnotator(),
         PsiUtils.findAllChildrenOfClassRecursive(file, FuncallExpression.class)
             .toArray(FuncallExpression[]::new));

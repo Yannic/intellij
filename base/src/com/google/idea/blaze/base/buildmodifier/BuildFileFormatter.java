@@ -15,94 +15,58 @@
  */
 package com.google.idea.blaze.base.buildmodifier;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
-
-import com.google.common.base.Strings;
-import com.google.common.io.CharStreams;
-import com.google.idea.blaze.base.formatter.FormatUtils.FileContentsProvider;
-import com.google.idea.blaze.base.formatter.FormatUtils.Replacements;
+import com.google.common.collect.ImmutableList;
+import com.google.idea.blaze.base.bazel.BazelWorkspaceRootProvider;
+import com.google.idea.blaze.base.lang.buildfile.psi.BuildFile;
 import com.google.idea.blaze.base.lang.buildfile.psi.BuildFile.BlazeFileType;
-import com.intellij.openapi.diagnostic.Logger;
-import com.intellij.openapi.util.TextRange;
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.util.Collection;
+import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
+import java.io.File;
+import java.nio.file.Path;
+import java.util.Collections;
 import javax.annotation.Nullable;
 
-/** Formats BUILD files using 'buildifier' */
+/** Builds the 'buildifier' command line for a BUILD file. */
 public class BuildFileFormatter {
 
-  private static final Logger logger = Logger.getInstance(BuildFileFormatter.class);
+  private BuildFileFormatter() {}
 
-  @Nullable
-  private static String getBuildifierBinaryPath() {
-    for (BuildifierBinaryProvider provider : BuildifierBinaryProvider.EP_NAME.getExtensions()) {
-      String path = provider.getBuildifierBinaryPath();
-      if (!Strings.isNullOrEmpty(path)) {
-        return path;
-      }
-    }
-    return null;
+  static ImmutableList<String> getCommandLineArgs(String binary, BuildFile buildFile) {
+    ImmutableList.Builder<String> cmd = ImmutableList.builder();
+    cmd.add(binary);
+    BlazeFileType type = buildFile.getBlazeFileType();
+    return cmd.add(fileTypeArg(type)).addAll(pathArg(buildFile)).build();
   }
 
-  /**
-   * Calls buildifier for a given text and list of line ranges, and returns the formatted text, or
-   * null if the formatting failed.
-   */
   @Nullable
-  static Replacements getReplacements(
-      BlazeFileType fileType, FileContentsProvider fileContents, Collection<TextRange> ranges) {
-    String buildifierBinaryPath = getBuildifierBinaryPath();
-    if (buildifierBinaryPath == null) {
-      return null;
-    }
-    String text = fileContents.getFileContentsIfUnchanged();
-    if (text == null) {
-      return null;
-    }
-    Replacements output = new Replacements();
-    try {
-      for (TextRange range : ranges) {
-        String input = range.substring(text);
-        String result = formatText(buildifierBinaryPath, fileType, input);
-        if (result == null) {
-          return null;
-        }
-        output.addReplacement(range, input, result);
-      }
-      return output;
-
-    } catch (IOException e) {
-      logger.warn(e);
-    }
-    return null;
-  }
-
-  /**
-   * Passes the input text to buildifier, returning the formatted output text, or null if formatting
-   * failed.
-   */
-  @Nullable
-  private static String formatText(
-      String buildifierBinaryPath, BlazeFileType fileType, String inputText) throws IOException {
-    Process process = new ProcessBuilder(buildifierBinaryPath, fileTypeArg(fileType)).start();
-    process.getOutputStream().write(inputText.getBytes(UTF_8));
-    process.getOutputStream().close();
-
-    BufferedReader reader =
-        new BufferedReader(new InputStreamReader(process.getInputStream(), UTF_8));
-    String formattedText = CharStreams.toString(reader);
-    try {
-      process.waitFor();
-    } catch (InterruptedException e) {
-      process.destroy();
-      Thread.currentThread().interrupt();
-    }
-    return process.exitValue() != 0 ? null : formattedText;
+  static File workingDirectory(BuildFile buildFile) {
+    WorkspaceRoot workspaceRoot =
+        BazelWorkspaceRootProvider.INSTANCE.findWorkspaceRoot(buildFile.getFile());
+    return workspaceRoot == null ? null : workspaceRoot.directory();
   }
 
   private static String fileTypeArg(BlazeFileType fileType) {
-    return fileType == BlazeFileType.SkylarkExtension ? "--type=bzl" : "--type=build";
+    return "--type="
+        + switch (fileType) {
+          case SkylarkExtension -> "bzl";
+          case BuildPackage -> "build";
+          case Workspace -> "workspace";
+          case MODULE -> "module";
+        };
+  }
+
+  private static Iterable<String> pathArg(@Nullable BuildFile buildFile) {
+    if (buildFile == null) {
+      return Collections.emptyList();
+    } else {
+      Path pathToFormat = buildFile.getVirtualFile().toNioPath();
+      WorkspaceRoot root = BazelWorkspaceRootProvider.INSTANCE.findWorkspaceRoot(pathToFormat.toFile());
+
+      if (root == null) {
+        return Collections.emptyList();
+      } else {
+        Path relativePath = root.path().relativize(pathToFormat);
+        return Collections.singletonList("--path=" + relativePath);
+      }
+    }
   }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The Bazel Authors. All rights reserved.
+ * Copyright 2025 The Bazel Authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,20 +18,25 @@ package com.google.idea.blaze.base.sync.projectstructure;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Multimap;
+import com.google.idea.blaze.base.bazel.BuildSystemProvider;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.primitives.WorkspacePath;
 import com.google.idea.blaze.base.model.primitives.WorkspaceRoot;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
+import com.google.idea.blaze.base.projectview.section.sections.UseExclusionPatternsSection;
 import com.google.idea.blaze.base.settings.Blaze;
 import com.google.idea.blaze.base.sync.SourceFolderProvider;
+import com.google.idea.blaze.base.sync.data.BlazeDataStorage;
 import com.google.idea.blaze.base.sync.projectview.ImportRoots;
 import com.google.idea.blaze.base.sync.projectview.SourceTestConfig;
+import com.google.idea.blaze.base.sync.projectview.WorkspaceFileFinder;
 import com.google.idea.blaze.base.util.UrlUtil;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ContentEntry;
 import com.intellij.openapi.roots.ModifiableRootModel;
 import com.intellij.openapi.roots.SourceFolder;
 import java.io.File;
+import java.io.FilenameFilter;
 import java.util.Collection;
 import java.util.Map;
 import javax.annotation.Nullable;
@@ -57,15 +62,37 @@ public class ContentEntryEditor {
 
     SourceTestConfig testConfig = new SourceTestConfig(projectViewSet);
     SourceFolderProvider provider = SourceFolderProvider.getSourceFolderProvider(blazeProjectData);
+    WorkspaceFileFinder finder = WorkspaceFileFinder.Provider.getInstance(project).getWorkspaceFileFinder();
 
     for (WorkspacePath rootDirectory : rootDirectories) {
       File rootFile = workspaceRoot.fileForPath(rootDirectory);
       ContentEntry contentEntry =
           modifiableRootModel.addContentEntry(UrlUtil.pathToUrl(rootFile.getPath()));
+      contentEntry.clearExcludeFolders();
 
       for (WorkspacePath exclude : excludesByRootDirectory.get(rootDirectory)) {
         File excludeFolder = workspaceRoot.fileForPath(exclude);
         contentEntry.addExcludeFolder(UrlUtil.fileToIdeaUrl(excludeFolder));
+      }
+
+      if (projectViewSet.getScalarValue(UseExclusionPatternsSection.KEY).orElse(true)) {
+        var exclusionPatternsDirectories = importRoots.systemExcludes();
+
+        for (WorkspacePath workspacePath : exclusionPatternsDirectories) {
+          if (!workspacePath.asPath().isAbsolute() && workspacePath.asPath().getNameCount() == 1) {
+            contentEntry.addExcludePattern(workspacePath.relativePath());
+          }
+        }
+      }
+
+      File directory = new File(workspaceRoot.toString());
+      File[] files = directory
+              .listFiles((dir, name) ->
+                      finder != null && finder.isInProject(dir) && BlazeDataStorage.ALL_PROJECT_SUBDIRECTORIES.containsValue(name));
+      if (files != null) {
+        for (File file : files) {
+          contentEntry.addExcludeFolder(UrlUtil.fileToIdeaUrl(file));
+        }
       }
 
       ImmutableMap<File, SourceFolder> sourceFolders =

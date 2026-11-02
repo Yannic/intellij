@@ -16,6 +16,7 @@
 package com.google.idea.blaze.base.projectview.parser;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.idea.blaze.base.projectview.parser.ProjectViewParser.TEMPORARY_LINE_NUMBER;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
@@ -38,6 +39,9 @@ import com.google.idea.blaze.base.projectview.section.sections.TargetSection;
 import com.google.idea.blaze.base.projectview.section.sections.TestSourceSection;
 import com.google.idea.blaze.base.projectview.section.sections.TextBlock;
 import com.google.idea.blaze.base.projectview.section.sections.TextBlockSection;
+import com.google.idea.blaze.base.projectview.section.sections.UseQuerySyncSection;
+import com.google.idea.blaze.base.projectview.section.sections.TryImportSection;
+import com.google.idea.blaze.base.projectview.section.sections.ViewProjectRootSection;
 import com.google.idea.blaze.base.projectview.section.sections.WorkspaceTypeSection;
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.ErrorCollector;
@@ -46,11 +50,20 @@ import com.google.idea.blaze.base.sync.BlazeSyncPlugin;
 import com.google.idea.blaze.base.sync.workspace.WorkspacePathResolverImpl;
 import com.google.idea.common.experiments.ExperimentService;
 import com.google.idea.common.experiments.MockExperimentService;
+import com.intellij.openapi.vfs.VirtualFileManager;
+import com.intellij.openapi.vfs.VirtualFileManagerListener;
+import com.intellij.openapi.vfs.impl.VirtualFileManagerImpl;
+import com.intellij.openapi.vfs.local.CoreLocalFileSystem;
 import java.io.File;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import javax.annotation.Nullable;
+
+import com.intellij.openapi.util.registry.Registry;
+import com.intellij.openapi.util.registry.RegistryValue;
 import org.jetbrains.annotations.NotNull;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -98,6 +111,9 @@ public class ProjectViewParserTest extends BlazeTestCase {
     applicationServices.register(ProjectViewStorageManager.class, projectViewStorageManager);
     applicationServices.register(ExperimentService.class, new MockExperimentService());
     registerExtensionPoint(BlazeSyncPlugin.EP_NAME, BlazeSyncPlugin.class);
+
+    registerExtensionPointByName("com.intellij.virtualFileManagerListener", VirtualFileManagerListener.class);
+    applicationServices.register(VirtualFileManager.class, new VirtualFileManagerImpl(List.of(new CoreLocalFileSystem())));
   }
 
   @Test
@@ -190,6 +206,9 @@ public class ProjectViewParserTest extends BlazeTestCase {
             .add(
                 ScalarSection.builder(ImportSection.KEY)
                     .set(new WorkspacePath("some/file.blazeproject")))
+            .add(
+                ScalarSection.builder(TryImportSection.KEY)
+                    .set(new WorkspacePath("some/file.blazeproject.optional")))
             .build();
     String text = ProjectViewParser.projectViewToString(projectView);
     assertThat(text)
@@ -202,7 +221,8 @@ public class ProjectViewParserTest extends BlazeTestCase {
                     "targets:",
                     "  //java/com/google:one",
                     "  //java/com/google:two",
-                    "import some/file.blazeproject"));
+                    "import some/file.blazeproject",
+                    "try_import some/file.blazeproject.optional"));
   }
 
   @Test
@@ -303,9 +323,32 @@ public class ProjectViewParserTest extends BlazeTestCase {
 
   @Test
   public void testImportMissingFileResultsInIssue() {
+    Registry.get("bazel.projectview.optional.imports").setValue(false);
     projectViewStorageManager.add(".blazeproject", "import parent.blazeproject");
     projectViewParser.parseProjectView(new File(".blazeproject"));
     errorCollector.assertIssues("Could not load project view file: '/parent.blazeproject'");
+  }
+
+  @Test
+  public void testImportMissingFileResultsInWarning() {
+    RegistryValue importsTreatmentRegistryValue = Registry.get("bazel.projectview.optional.imports");
+    try {
+      importsTreatmentRegistryValue.setValue(true);
+      projectViewStorageManager.add(".blazeproject", "import parent.blazeproject");
+      projectViewParser.parseProjectView(new File(".blazeproject"));
+      errorCollector.assertIssues("Could not load project view file: '/parent.blazeproject'");
+      errorCollector.assertHasNoErrors();
+    } finally {
+      importsTreatmentRegistryValue.setValue(false);
+    }
+  }
+
+  @Test
+  public void testTryImportMissingFileResultsInWarning() {
+      projectViewStorageManager.add(".blazeproject", "try_import parent.blazeproject");
+      projectViewParser.parseProjectView(new File(".blazeproject"));
+      errorCollector.assertIssues("Could not load project view file: '/parent.blazeproject'");
+      errorCollector.assertHasNoErrors();
   }
 
   @Test
@@ -362,7 +405,7 @@ public class ProjectViewParserTest extends BlazeTestCase {
     ProjectViewSet.ProjectViewFile projectViewFile = projectViewSet.getTopLevelProjectViewFile();
     ProjectView projectView = projectViewFile.projectView;
     assertThat(projectView.getSectionsOfType(TextBlockSection.KEY).get(0).getTextBlock())
-        .isEqualTo(new TextBlock(ImmutableList.of("# comment")));
+        .isEqualTo(new TextBlock(ImmutableList.of("# comment"), TEMPORARY_LINE_NUMBER));
     assertThat(projectView.getSectionsOfType(DirectorySection.KEY).get(0).items())
         .containsExactly(
             DirectoryEntry.include(new WorkspacePath("java/com/google")),
@@ -420,23 +463,24 @@ public class ProjectViewParserTest extends BlazeTestCase {
     assert projectViewFile != null;
     ProjectView projectView = projectViewFile.projectView;
 
-    assertThat(projectView)
-        .isEqualTo(
-            ProjectView.builder()
-                .add(
+    ProjectView expectedProjectView = ProjectView.builder()
+            .add(
                     ListSection.builder(DirectorySection.KEY)
-                        .add(DirectoryEntry.include(new WorkspacePath("dir0")))
-                        .add(TextBlock.of("  "))
-                        .add(TextBlock.of(""))
-                        .add(DirectoryEntry.include(new WorkspacePath("dir1")))
-                        .add(TextBlock.of("  ", "  "))
-                        .add(TextBlock.of("# comment"))
-                        .add(DirectoryEntry.include(new WorkspacePath("dir2")))
-                        .add(TextBlock.of(""))
-                        .add(TextBlock.of("  # commented out dir"))
-                        .add(TextBlock.of("  ")))
-                .add(TextBlockSection.of(TextBlock.of("# comment", "# comment")))
-                .build());
+                            .setFirstLineNumber(0)
+                            .add(DirectoryEntry.include(new WorkspacePath("dir0")), 1)
+                            .add(TextBlock.of(2, "  "))
+                            .add(TextBlock.of(3, ""))
+                            .add(DirectoryEntry.include(new WorkspacePath("dir1")), 4)
+                            .add(TextBlock.of(5, "  ", "  "))
+                            .add(TextBlock.of(7, "# comment"))
+                            .add(DirectoryEntry.include(new WorkspacePath("dir2")), 8)
+                            .add(TextBlock.of(9, ""))
+                            .add(TextBlock.of(10, "  # commented out dir"))
+                            .add(TextBlock.of(11, "  ")))
+            .add(TextBlockSection.of(TextBlock.of(12, "# comment", "# comment")))
+            .build();
+
+    assertThat(projectView).isEqualTo(expectedProjectView);
 
     String outputString = ProjectViewParser.projectViewToString(projectView);
     assertThat(outputString).isEqualTo(text);
@@ -474,5 +518,36 @@ public class ProjectViewParserTest extends BlazeTestCase {
     ProjectView projectView = projectViewFile.projectView;
     String outputString = ProjectViewParser.projectViewToString(projectView);
     assertThat(outputString).isEqualTo(text);
+  }
+
+  @Test
+  public void testParsersSubset() throws Exception {
+    projectViewStorageManager.add(
+      ".blazeproject",
+      "workspace_type: c",
+            "use_query_sync: compatibility");
+    projectViewParser.parseProjectView(new File(".blazeproject"), List.of(WorkspaceTypeSection.PARSER));
+    // Parser errors are expected from the parsers not included in the parsers list
+
+    ProjectViewSet projectViewSet = projectViewParser.getResult();
+    assertThat(projectViewSet.getScalarValue(WorkspaceTypeSection.KEY)).hasValue(WorkspaceType.C);
+    // Value will not be parsed for the parsers not in the provided list
+    assertThat(projectViewSet.getScalarValue(UseQuerySyncSection.KEY)).isEqualTo(Optional.empty());
+  }
+
+  @Test
+  public void testParserParsesVieProjectRootSection() throws Exception {
+    String text =
+        Joiner.on('\n')
+            .join(
+                "directories:",
+                "  java/com/google",
+                "view_project_root: true");
+    projectViewStorageManager.add(".blazeproject", text);
+    projectViewParser.parseProjectView(new File(".blazeproject"));
+    errorCollector.assertNoIssues();
+
+    ProjectViewSet projectViewSet = projectViewParser.getResult();
+    assertThat(projectViewSet.getScalarValue(ViewProjectRootSection.KEY)).isEqualTo(Optional.of(true));
   }
 }

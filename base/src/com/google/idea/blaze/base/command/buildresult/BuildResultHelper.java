@@ -15,16 +15,19 @@
  */
 package com.google.idea.blaze.base.command.buildresult;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Interner;
-import com.google.idea.blaze.base.model.primitives.Label;
-import com.google.idea.blaze.base.run.testlogs.BlazeTestResults;
+import com.google.errorprone.annotations.MustBeClosed;
+import com.google.idea.blaze.base.command.buildresult.bepparser.BuildEventStreamProvider;
+import com.google.idea.blaze.base.scope.BlazeContext;
+import com.google.idea.blaze.exception.BuildException;
+import com.intellij.openapi.diagnostic.Logger;
+import java.io.InputStream;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.Predicate;
+import java.util.function.Consumer;
 
 /** Assists in getting build artifacts from a build operation. */
 public interface BuildResultHelper extends AutoCloseable {
+  static final Logger logger = Logger.getInstance(BuildResultHelper.class);
 
   /**
    * Returns the build flags necessary for the build result helper to work.
@@ -33,149 +36,46 @@ public interface BuildResultHelper extends AutoCloseable {
    */
   List<String> getBuildFlags();
 
-  /**
-   * Parses the BEP output data and returns the corresponding {@link ParsedBepOutput}. May only be
-   * called once, after the build is complete.
-   *
-   * <p>As BEP retrieval can be memory-intensive for large projects, implementations of
-   * getBuildOutput may restrict parallelism for cases in which many builds are executed in parallel
-   * (e.g. remote builds).
-   */
-  default ParsedBepOutput getBuildOutput() throws GetArtifactsException {
-    return getBuildOutput(Optional.empty());
-  }
 
   /**
-   * Parses the BEP output data and returns the corresponding {@link ParsedBepOutput}. May only be
-   * called once, after the build is complete.
-   *
-   * <p>As BEP retrieval can be memory-intensive for large projects, implementations of
-   * getBuildOutput may restrict parallelism for cases in which many builds are executed in parallel
-   * (e.g. remote builds).
+   * Gets the BEP stream for the build. May only be called once. May only be called after the build is complete.
    */
-  default ParsedBepOutput getBuildOutput(Interner<String> stringInterner)
-      throws GetArtifactsException {
-    return getBuildOutput(Optional.empty(), stringInterner);
-  }
-
-  /**
-   * Parses the BEP output data and returns the corresponding {@link ParsedBepOutput}. May only be
-   * called once, after the build is complete.
-   *
-   * <p>As BEP retrieval can be memory-intensive for large projects, implementations of
-   * getBuildOutput may restrict parallelism for cases in which many builds are executed in parallel
-   * (e.g. remote builds).
-   */
-  default ParsedBepOutput getBuildOutput(
-      Optional<String> completionBuildId, Interner<String> stringInterner)
-      throws GetArtifactsException {
-    return getBuildOutput(completionBuildId);
-  }
-
-  /**
-   * Retrieves BEP build events according to given id, parses them and returns the corresponding
-   * {@link ParsedBepOutput}. May only be called once, after the build is complete.
-   *
-   * <p>As BEP retrieval can be memory-intensive for large projects, implementations of
-   * getBuildOutput may restrict parallelism for cases in which many builds are executed in parallel
-   * (e.g. remote builds).
-   */
-  ParsedBepOutput getBuildOutput(Optional<String> completedBuildId) throws GetArtifactsException;
-
-  /**
-   * Retrieves test results, parses them and returns the corresponding {@link BlazeTestResults}. May
-   * only be called once, after the build is complete.
-   */
-  BlazeTestResults getTestResults(Optional<String> completedBuildId) throws GetArtifactsException;
+  @MustBeClosed
+  BuildEventStreamProvider getBepStream(Optional<String> completionBuildId) throws GetArtifactsException;
 
   /** Deletes the local BEP output file associated with the test results */
   default void deleteTemporaryOutputFiles() {}
 
   /**
-   * Parses the BEP output data to collect all build flags used. Return all flags that pass filters
+   * Parses the BEP output data to collect message on stdout.
+   *
+   * <p>This function is designed for remote build which does not have local console output. Local
+   * build should not use this since {@link ExternalTask} provide stdout handler.
+   *
+   * @param completedBuildId build id.
+   * @param stderrConsumer process stderr
+   * @param blazeContext blaze context may contains logging scope
+   * @return a list of message on stdout.
    */
-  BuildFlags getBlazeFlags(Optional<String> completedBuildId) throws GetFlagsException;
+  default InputStream getStdout(
+      String completedBuildId, Consumer<String> stderrConsumer, BlazeContext blazeContext)
+      throws BuildException {
+    return InputStream.nullInputStream();
+  }
 
   /**
-   * Parses the BEP output data to collect message on stderr
+   * Parses the BEP output data to collect message on stderr.
    *
    * <p>This function is designed for remote build which does not have local console output. Local
    * build should not use this since {@link ExternalTask} provide stderr handler.
    *
    * @param completedBuildId build id.
-   * @return a list of message on stderr
+   * @return a list of message on stderr.
    */
-  default ImmutableList<String> getStderr(String completedBuildId) throws GetStderrException {
-    return ImmutableList.of();
-  }
-
-  /**
-   * Parses the BEP output data to collect all build flags used. Return all flags that pass filters
-   */
-  default BuildFlags getBlazeFlags() throws GetFlagsException {
-    return getBlazeFlags(Optional.empty());
-  }
-
-  /**
-   * Returns the build result. May only be called once, after the build is complete, or no artifacts
-   * will be returned.
-   *
-   * @return The build artifacts from the build operation.
-   */
-  default ImmutableList<OutputArtifact> getAllOutputArtifacts(Predicate<String> pathFilter)
-      throws GetArtifactsException {
-    return getBuildOutput().getAllOutputArtifacts(pathFilter).asList();
-  }
-
-  /**
-   * Returns the build artifacts, filtering out all artifacts not directly produced by the specified
-   * target.
-   *
-   * <p>May only be called once, after the build is complete, or no artifacts will be returned.
-   */
-  default ImmutableList<OutputArtifact> getBuildArtifactsForTarget(
-      Label target, Predicate<String> pathFilter) throws GetArtifactsException {
-    return getBuildOutput().getDirectArtifactsForTarget(target, pathFilter).asList();
-  }
-
-  /**
-   * Returns all build artifacts belonging to the given output groups. May only be called once,
-   * after the build is complete, or no artifacts will be returned.
-   */
-  default ImmutableList<OutputArtifact> getArtifactsForOutputGroup(
-      String outputGroup, Predicate<String> pathFilter) throws GetArtifactsException {
-    return getBuildOutput().getOutputGroupArtifacts(outputGroup, pathFilter);
+  default InputStream getStderr(String completedBuildId) throws BuildException {
+    return InputStream.nullInputStream();
   }
 
   @Override
   void close();
-
-  /** Indicates a failure to get artifact information */
-  class GetArtifactsException extends Exception {
-    public GetArtifactsException(String message) {
-      super(message);
-    }
-  }
-
-  /** Indicates a failure to get artifact information */
-  class GetFlagsException extends Exception {
-    public GetFlagsException(String message, Throwable cause) {
-      super(message, cause);
-    }
-
-    public GetFlagsException(String message) {
-      super(message);
-    }
-
-    public GetFlagsException(Throwable cause) {
-      super(cause);
-    }
-  }
-
-  /** Indicates a failure to get stderr messages */
-  class GetStderrException extends Exception {
-    public GetStderrException(String message) {
-      super(message);
-    }
-  }
 }

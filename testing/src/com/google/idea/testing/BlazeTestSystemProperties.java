@@ -15,22 +15,18 @@
  */
 package com.google.idea.testing;
 
-import com.google.common.base.Joiner;
-import com.google.common.collect.Lists;
-import com.google.common.io.Files;
-import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.PathManager;
 import com.intellij.openapi.util.BuildNumber;
-import com.intellij.openapi.util.Disposer;
-import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess;
+import com.intellij.openapi.util.SystemInfo;
 import com.intellij.util.PlatformUtils;
 import java.io.File;
 import java.io.IOException;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.Enumeration;
-import java.util.List;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
 import javax.annotation.Nullable;
 
 /**
@@ -41,70 +37,175 @@ class BlazeTestSystemProperties {
 
   private BlazeTestSystemProperties() {}
 
-  /** The absolute path to the runfiles directory. */
-  private static final String RUNFILES_PATH = TestUtils.getUserValue("TEST_SRCDIR");
-
   /** Sets up the necessary system properties for running IntelliJ tests via blaze/bazel. */
   public static void configureSystemProperties() {
-    File sandbox = new File(TestUtils.getTmpDirFile(), "_intellij_test_sandbox");
+    final var sandbox = new File(TestUtils.getTmpDirFile(), "_intellij_test_sandbox");
 
+    redirectIdePathsToSandbox(sandbox);
+    linkSdkDirectoriesIntoSandbox();
+    configurePluginCompatibility();
+    relaxFileSystemChecks();
+
+    setIfEmpty("idea.classpath.index.enabled", "false");
+    setIfEmpty("idea.force.use.core.classloader", "true");
+  }
+
+  /** Points all IDE state (config, caches, logs, preferences, home) at the test sandbox. */
+  private static void redirectIdePathsToSandbox(File sandbox) {
     setSandboxPath("idea.home.path", new File(sandbox, "home"));
     setSandboxPath("idea.config.path", new File(sandbox, "config"));
     setSandboxPath("idea.system.path", new File(sandbox, "system"));
 
+    final var testUndeclaredOutputsDir = System.getenv("TEST_UNDECLARED_OUTPUTS_DIR");
+    if (testUndeclaredOutputsDir != null) {
+      setSandboxPath("idea.log.path", new File(testUndeclaredOutputsDir, "logs"));
+    }
+
     setSandboxPath("java.util.prefs.userRoot", new File(sandbox, "userRoot"));
     setSandboxPath("java.util.prefs.systemRoot", new File(sandbox, "systemRoot"));
 
-    setIfEmpty("idea.classpath.index.enabled", "false");
+    // Reset the home directory to a temporary location so tests can neither read nor
+    // write the real user home (e.g. analytics settings or a local SDK under ~/Android).
+    final var userHome = new File(sandbox, "userhome");
+    System.setProperty("user.home", userHome.getAbsolutePath());
+    redirectHomeEnvironmentVariables(userHome);
+  }
 
-    // Some plugins have a since-build and until-build restriction, so we need
-    // to update the build number here
-    String buildNumber = readApiVersionNumber();
-    if (buildNumber == null) {
-      buildNumber = BuildNumber.currentVersion().asString();
+  /**
+   * Redirects {@code HOME} and the XDG base-directory environment variables into the sandbox.
+   *
+   * <p>The {@code user.home} system property set above only affects Java path APIs. Native code and
+   * XDG-based resolution (e.g. {@link PathManager}'s common data path uses {@code $XDG_DATA_HOME},
+   * which defaults to {@code $HOME/.local/share}) read the *environment* instead, and would
+   * otherwise write under the real user home -- frequently read-only on CI agents.
+   */
+  private static void redirectHomeEnvironmentVariables(File userHome) {
+    if (SystemInfo.isWindows) {
+      return; // HOME/XDG are POSIX-only; these paths do not derive from the real home on Windows.
     }
+
+    final var overrides = new HashMap<String, String>();
+    overrides.put("HOME", userHome.getPath());
+    overrides.put("XDG_DATA_HOME", new File(userHome, ".local/share").getPath());
+    overrides.put("XDG_CONFIG_HOME", new File(userHome, ".config").getPath());
+    overrides.put("XDG_CACHE_HOME", new File(userHome, ".cache").getPath());
+    overrides.put("XDG_STATE_HOME", new File(userHome, ".local/state").getPath());
+
+    for (final var path : overrides.values()) {
+      new File(path).mkdirs();
+    }
+
+    overrideEnvironmentVariables(overrides);
+  }
+
+  /**
+   * Overrides environment variables of the running JVM so that both {@link System#getenv} callers
+   * and child processes observe the sandbox values. Relies on {@code
+   * --add-opens=java.base/java.util=ALL-UNNAMED}, which the integration-test rules already pass.
+   *
+   * <p>Note: this only updates the JVM's view of the environment; in-process native code calling
+   * libc {@code getenv} directly is not affected.
+   */
+  @SuppressWarnings("unchecked")
+  private static void overrideEnvironmentVariables(Map<String, String> overrides) {
+    try {
+      final var unmodifiableMap = Class.forName("java.util.Collections$UnmodifiableMap");
+      final var backingMapField = unmodifiableMap.getDeclaredField("m");
+      backingMapField.setAccessible(true);
+
+      final var backingMap = (Map<String, String>) backingMapField.get(System.getenv());
+      backingMap.putAll(overrides);
+    } catch (ReflectiveOperationException e) {
+      throw new RuntimeException("Could not redirect HOME/XDG environment variables for tests", e);
+    }
+  }
+
+  /**
+   * Links the SDK {@code bin} and {@code lib} directories into the sandbox home.
+   *
+   * <p>On the radler/Rider code path the platform accesses {@code <idea.home.path>/lib} (and {@code
+   * /bin}) very early during application load, before any test setUp would run. Since {@code
+   * idea.home.path} points at the empty sandbox, those directories have to be linked to the real
+   * SDK beforehand.
+   */
+  private static void linkSdkDirectoriesIntoSandbox() {
+    final var sdkRoot = findSdkRoot();
+    linkSandboxDir(sdkRoot, "bin", Path.of(PathManager.getBinPath()));
+    linkSandboxDir(sdkRoot, "lib", Path.of(PathManager.getLibPath()));
+  }
+
+  private static Path findSdkRoot() {
+    // app.jar lives at <sdk_root>/lib/app.jar; PathManager.getJarPathForClass works
+    // without the application being initialized.
+    final var appJar = PathManager.getJarPathForClass(Application.class);
+    if (appJar == null) {
+      throw new RuntimeException("Could not locate the platform jar");
+    }
+
+    final var libDir = Path.of(appJar).getParent();
+    if (libDir == null || !libDir.getFileName().toString().equals("lib")) {
+      throw new RuntimeException("Unexpected platform jar location: " + appJar);
+    }
+
+    return libDir.getParent();
+  }
+
+  private static void linkSandboxDir(Path sdkRoot, String dirName, Path link) {
+    final var target = sdkRoot.resolve(dirName);
+    if (!Files.exists(target)) {
+      throw new RuntimeException("Missing SDK directory: " + target);
+    }
+
+    try {
+      Files.deleteIfExists(link);
+      Files.createSymbolicLink(link, target);
+    } catch (IOException e) {
+      throw new RuntimeException("Could not create " + dirName + " path symlink", e);
+    }
+  }
+
+  /**
+   * Reports the build number (and matching platform prefix) the tests should use, so plugins with a
+   * since-build/until-build restriction are considered compatible.
+   */
+  private static void configurePluginCompatibility() {
+    final var buildNumber = resolveBuildNumber();
     setIfEmpty("idea.plugins.compatible.build", buildNumber);
     setIfEmpty(PlatformUtils.PLATFORM_PREFIX_KEY, determinePlatformPrefix(buildNumber));
+  }
 
-    // b/166052760: Early in the android studio initialization, it accesses the user's home
-    // directory for retrieving some analytics settings, and to also set up an SDK from
-    // ~/Android/sdk, both of which it shouldn't be doing during testing. To fix this, we reset home
-    // directory to point to a temporary directory. (Blaze may be doing this in general, so this
-    // is more useful for bazel).
-    System.setProperty("user.home", new File(sandbox, "userhome").getAbsolutePath());
+  private static String resolveBuildNumber() {
+    final var apiVersion = readApiVersionNumber();
+    return apiVersion != null ? apiVersion : BuildNumber.currentVersion().asString();
+  }
 
-    // Tests fail if they access files outside of the project roots and other system directories.
-    // Ensure runfiles and platform api are allowed.
-    // Note: We want this access to be true for all tests so we don't dispose the disposable.
-    Disposable disposable = Disposer.newDisposable();
-    VfsRootAccess.allowRootAccess(disposable, RUNFILES_PATH);
-    String platformApi = getPlatformApiPath();
-    if (platformApi != null) {
-      VfsRootAccess.allowRootAccess(disposable, platformApi);
+  @Nullable
+  private static String readApiVersionNumber() {
+    final var apiVersionFilePath = System.getProperty("blaze.idea.api.version.file");
+    if (apiVersionFilePath == null) {
+      throw new RuntimeException("No api_version_file found in runfiles directory");
     }
 
-    List<String> pluginJars = Lists.newArrayList();
+    final var runfilesWorkspaceRoot = System.getProperty("user.dir");
+    if (runfilesWorkspaceRoot == null) {
+      throw new RuntimeException("Runfiles workspace root not found");
+    }
+
+    final var apiVersionFile = Path.of(runfilesWorkspaceRoot, apiVersionFilePath);
+    if (!Files.isReadable(apiVersionFile)) {
+      return null;
+    }
+
     try {
-      Enumeration<URL> urls =
-          BlazeTestSystemProperties.class.getClassLoader().getResources("META-INF/plugin.xml");
-      while (urls.hasMoreElements()) {
-        URL url = urls.nextElement();
-        addArchiveFile(url, pluginJars);
-      }
+      return Files.readString(apiVersionFile, StandardCharsets.UTF_8).lines().findFirst().orElse(null);
     } catch (IOException e) {
-      System.err.println("Cannot find plugin.xml resources");
-      e.printStackTrace();
+      throw new RuntimeException(e);
     }
-
-    setIfEmpty("idea.plugins.path", Joiner.on(File.pathSeparator).join(pluginJars));
-    setIfEmpty("idea.force.use.core.classloader", "true");
   }
 
   @Nullable
   private static String determinePlatformPrefix(String buildNumber) {
-    if (buildNumber.startsWith("AI")) { // Android Studio
-      return "AndroidStudio";
-    } else if (buildNumber.startsWith("IU")) { // IntelliJ Ultimate
+    if (buildNumber.startsWith("IU")) { // IntelliJ Ultimate
       return null;
     } else if (buildNumber.startsWith("IC")) { // IntelliJ Community
       return "Idea";
@@ -115,71 +216,13 @@ class BlazeTestSystemProperties {
     }
   }
 
-  @Nullable
-  private static String readApiVersionNumber() {
-    String apiVersionFilePath = System.getProperty("blaze.idea.api.version.file");
-    String runfilesWorkspaceRoot = System.getProperty("user.dir");
-    if (apiVersionFilePath == null) {
-      throw new RuntimeException("No api_version_file found in runfiles directory");
-    }
-    if (runfilesWorkspaceRoot == null) {
-      throw new RuntimeException("Runfiles workspace root not found");
-    }
-    File apiVersionFile = new File(runfilesWorkspaceRoot, apiVersionFilePath);
-    if (!apiVersionFile.canRead()) {
-      return null;
-    }
-    try {
-      return Files.asCharSource(apiVersionFile, StandardCharsets.UTF_8).readFirstLine();
-    } catch (IOException e) {
-      throw new RuntimeException(e);
-    }
-  }
-
-  @Nullable
-  private static String getPlatformApiPath() {
-    String platformJar = PathManager.getJarPathForClass(Application.class);
-    if (platformJar == null) {
-      return null;
-    }
-    File jarFile = new File(platformJar).getAbsoluteFile();
-    File jarDir = jarFile.getParentFile();
-    if (jarDir == null) {
-      return null;
-    }
-    if (jarDir.getName().equals("lib")) {
-      // Building against IDE distribution.
-      // root/ <- we want this
-      // |-lib/
-      // | `-openapi.jar (jarFile)
-      // `-plugins/
-      return jarDir.getParent();
-    } else if (jarDir.getName().equals("core-api")) {
-      // Building against source.
-      // tools/idea/ <- we want this
-      // |-platform/
-      // | `-core-api/
-      // |   `-libcore-api.jar (jarFile)
-      // `-plugins/
-      File platformDir = jarDir.getParentFile();
-      if (platformDir != null && platformDir.getName().equals("platform")) {
-        return platformDir.getParent();
-      }
-    }
-    return null;
-  }
-
-  private static void addArchiveFile(URL url, List<String> files) {
-    if ("jar".equals(url.getProtocol())) {
-      String path = url.getPath();
-      int index = path.indexOf("!/");
-      if (index > 0) {
-        String jarPath = path.substring(0, index);
-        if (jarPath.startsWith("file:")) {
-          files.add(jarPath.substring(5));
-        }
-      }
-    }
+  /**
+   * Disables the VfsRootAccess check. Tests otherwise fail when accessing files outside the project
+   * roots; in particular {@code BuiltinsVirtualFileProviderBaseImpl} accesses class path jars that
+   * contain {@code kotlin} packages, which would need to be added to the allow list instead.
+   */
+  private static void relaxFileSystemChecks() {
+    System.setProperty("NO_FS_ROOTS_ACCESS_CHECK", "true");
   }
 
   private static void setSandboxPath(String property, File path) {

@@ -17,7 +17,7 @@ package com.google.idea.blaze.python.sync;
 
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.primitives.LanguageClass;
-import com.google.idea.blaze.base.syncstatus.SyncStatusContributor;
+import com.google.idea.blaze.base.syncstatus.LegacySyncStatusContributor;
 import com.intellij.ide.projectView.ProjectViewNode;
 import com.intellij.ide.projectView.impl.nodes.PsiFileNode;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -25,7 +25,7 @@ import com.intellij.psi.PsiFile;
 import com.jetbrains.python.psi.PyFile;
 import javax.annotation.Nullable;
 
-class PySyncStatusContributor implements SyncStatusContributor {
+class PySyncStatusContributor implements LegacySyncStatusContributor {
 
   @Nullable
   @Override
@@ -42,7 +42,7 @@ class PySyncStatusContributor implements SyncStatusContributor {
 
   @Override
   public boolean handlesFile(BlazeProjectData projectData, VirtualFile file) {
-    return projectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.PYTHON)
+    return projectData.workspaceLanguageSettings().isLanguageActive(LanguageClass.PYTHON)
         && file.getName().endsWith(".py");
   }
 }

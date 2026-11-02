@@ -1,0 +1,104 @@
+/*
+ * Copyright 2026 The Bazel Authors. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.google.idea.testing.headless;
+
+import com.google.common.collect.ImmutableList;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+public class ProjectViewBuilder {
+
+  private final List<String> directories = new ArrayList<>();
+  private final List<String> targets = new ArrayList<>();
+  private final List<String> build_flags = new ArrayList<>();
+  private final List<String> sync_flags = new ArrayList<>();
+
+  private boolean derive_targets_from_directories = true;
+
+  public ProjectViewBuilder addDirectories(String... values) {
+    directories.addAll(Arrays.asList(values));
+    return this;
+  }
+
+  public ProjectViewBuilder addRootDirectory() {
+    directories.add(".");
+    return this;
+  }
+
+  public ProjectViewBuilder addTarget(String... values) {
+    targets.addAll(Arrays.asList(values));
+    derive_targets_from_directories = false;
+    return this;
+  }
+
+  public ProjectViewBuilder addBuildFlag(String... values) {
+    build_flags.addAll(Arrays.asList(values));
+    return this;
+  }
+
+  public ImmutableList<String> getBuildFlags() {
+    return ImmutableList.copyOf(build_flags);
+  }
+
+  public ProjectViewBuilder addSyncFlag(String... values) {
+    sync_flags.addAll(Arrays.asList(values));
+    return this;
+  }
+
+  public ImmutableList<String> getSyncFlags() {
+    return ImmutableList.copyOf(sync_flags);
+  }
+
+  public ProjectViewBuilder setDeriveTargetsFromDirectories(boolean value) {
+    derive_targets_from_directories = value;
+    return this;
+  }
+
+  @Override
+  public String toString() {
+    final var builder = new StringBuilder();
+
+    if (!directories.isEmpty()) {
+      builder.append("directories:\n");
+      directories.stream().map(ProjectViewBuilder::toElement).forEach(builder::append);
+    }
+
+    if (!targets.isEmpty()) {
+      builder.append("targets:\n");
+      targets.stream().map(ProjectViewBuilder::toElement).forEach(builder::append);
+    }
+
+    if (!build_flags.isEmpty()) {
+      builder.append("build_flags:\n");
+      build_flags.stream().map(ProjectViewBuilder::toElement).forEach(builder::append);
+    }
+
+    if (!sync_flags.isEmpty()) {
+      builder.append("sync_flags:\n");
+      sync_flags.stream().map(ProjectViewBuilder::toElement).forEach(builder::append);
+    }
+
+    builder.append(String.format("derive_targets_from_directories: %b%n", derive_targets_from_directories));
+
+    return builder.toString();
+  }
+
+  private static String toElement(String value) {
+    return String.format("  %s%n", value);
+  }
+}
